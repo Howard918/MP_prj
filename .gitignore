@@ -12,16 +12,30 @@
 .swiftpm/
 migrate_working_dir/
 
+# Environment files (Sensitive API Keys & Secret Keys - Never commit to Git)
+*.env
+.env
+.env.*
+backend/.env
+backend/*.env
+
+# SQLite Database & Local Databases
+*.db
+*.sqlite
+sql_app.db
+backend/sql_app.db
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
 # IntelliJ related
 *.iml
 *.ipr
 *.iws
 .idea/
-
-# The .vscode folder contains launch configuration and tasks you configure in
-# VS Code which you may wish to be included in version control, so this line
-# is commented out by default.
-#.vscode/
 
 # Flutter/Dart/Pub related
 **/doc/api/
