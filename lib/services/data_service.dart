@@ -358,18 +358,20 @@ class DataService extends ChangeNotifier {
 
       if (response.statusCode == 200) {
         final List<dynamic> jsonList = json.decode(utf8.decode(response.bodyBytes));
-        if (jsonList.isNotEmpty) {
-          final serverScenarios = jsonList.map((j) => RoleplayScenario.fromJson(j)).toList();
-          
-          final Map<String, RoleplayScenario> map = {};
-          for (final s in scenarioStore) {
-            map[s.id] = s;
+        final serverScenarios = jsonList.map((j) => RoleplayScenario.fromJson(j)).toList();
+        
+        // 💡 버그 픽스: Map 병합에서 List 기반 완전 동기화로 개편
+        // 백엔드 DB를 최신 Source of Truth로 삼아 덮어쓰되, 
+        // 아직 서버에 업로드/공개되지 않은 로컬 오프라인 초안(draft)만 보존합니다.
+        final List<RoleplayScenario> syncedScenarios = List.from(serverScenarios);
+        for (final local in scenarioStore) {
+          final exists = serverScenarios.any((s) => s.id == local.id);
+          if (!exists && !local.isPublished) {
+            syncedScenarios.add(local);
           }
-          for (final s in serverScenarios) {
-            map[s.id] = s;
-          }
-          scenarioStore = map.values.toList();
         }
+        scenarioStore = syncedScenarios;
+        _saveScenariosToLocalPrefs(); // 서버 최신 수신본을 로컬 저장소에도 영구 동기화
       }
     } catch (e) {
       debugPrint('백엔드 시나리오 동기화 실패 (로컬 유지): $e');
@@ -455,26 +457,29 @@ class DataService extends ChangeNotifier {
         final List<dynamic> reportsJson = json.decode(utf8.decode(response.bodyBytes));
         final backendReports = reportsJson.map((j) => PracticeReport.fromJson(j)).toList();
 
-        final Map<String, PracticeReport> reportMap = {};
+        // 💡 버그 픽스: Map Key 충돌로 인한 중복/덮어쓰기 오류 방지를 위해 List 기반 완전 교체 로직 적용
+        final List<PracticeReport> syncedReports = List.from(backendReports);
 
-        // 1. 기존 로컬 인메모리 리포트 보존
-        for (final r in practiceReports) {
-          final key = '${r.scenarioId.trim()}_${r.dateTime.millisecondsSinceEpoch}';
-          reportMap[key] = r;
-          reportMap[r.id] = r;
+        for (final local in practiceReports) {
+          // 백엔드 리포트와 동일한 항목이 있는지 검사 (DB ID가 같거나, 시나리오ID+수행시각이 완벽히 일치하는 경우)
+          final existsInBackend = backendReports.any((b) => 
+              b.id == local.id || 
+              (b.scenarioId.trim() == local.scenarioId.trim() && 
+               b.dateTime.millisecondsSinceEpoch == local.dateTime.millisecondsSinceEpoch)
+          );
+          
+          // 백엔드에 아직 저장되지 않은 로컬 오프라인 전용 생성 리포트만 추가 보존
+          if (!existsInBackend) {
+              syncedReports.add(local);
+          }
         }
 
-        // 2. 백엔드 DB에서 수신한 최신 리포트로 덮어쓰기/병합
-        for (final r in backendReports) {
-          final key = '${r.scenarioId.trim()}_${r.dateTime.millisecondsSinceEpoch}';
-          reportMap[key] = r;
-          reportMap[r.id] = r;
-        }
-
-        practiceReports = reportMap.values.toSet().toList();
+        practiceReports = syncedReports;
         practiceReports.sort((a, b) => b.dateTime.compareTo(a.dateTime));
       } else if (response.statusCode == 401 && currentUserId != null) {
         ServerConnectionHandler.handleDisconnection('인증 세션이 만료되었습니다.\n다시 로그인해 주세요.');
+      } else if (response.statusCode == 409 && currentUserId != null) {
+        ServerConnectionHandler.handleDisconnection('다른 기기에서 동일한 유저로 로그인이 감지되었습니다.\n현재 기기에서는 로그아웃되며, 다시 이용하시려면 로그인해 주세요.');
       }
     } catch (e) {
       debugPrint('백엔드 훈련 리포트 동기화 실패: $e');

@@ -515,6 +515,7 @@ class _DashboardState extends ConsumerState<Dashboard> {
 
                 try {
                   final authService = ref.read(authServiceProvider);
+                  await authService.reloadUserProfile(); // 🔥 사용자 최신 통계(평균 점수, 훈련 횟수 등) 업데이트 연동
                   await ref.read(dataServiceProvider).refreshData(
                     token: authService.accessToken,
                     baseUrl: authService.baseUrl,

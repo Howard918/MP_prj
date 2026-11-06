@@ -278,6 +278,12 @@ class AuthService extends ChangeNotifier {
     return false;
   }
 
+  // 4-1. 외부에서 수동으로 현재 유저 프로필 강제 최신화 호출
+  Future<bool> reloadUserProfile() async {
+    if (accessToken == null) return false;
+    return await _fetchUserProfileFromBackend(accessToken!);
+  }
+
   // [관리자 전용] 5. 전체 유저 목록 수신 API (GET /admin/users)
   Future<List<UserModel>> fetchAdminUsers() async {
     if (accessToken == null) return [];
