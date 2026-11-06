@@ -385,39 +385,19 @@ class DataService extends ChangeNotifier {
     notifyListeners();
   }
 
-  void addFieldCase(FieldCase fieldCase) {
+  void addFieldCase(FieldCase fieldCase, {String? token, String? baseUrl}) {
     fieldCaseStore.insert(0, fieldCase);
     // 관리자 유저들에게 현장 사례 검토 알림 발동 🔴
     triggerCaseReviewNotification(fieldCase.authorId);
     notifyListeners();
   }
 
-  void deleteFieldCase(String caseId) {
+  void deleteFieldCase(String caseId, {String? token, String? baseUrl}) {
     fieldCaseStore.removeWhere((c) => c.id == caseId);
     notifyListeners();
   }
 
-  void approveCase(String caseId, {String? comment}) {
-    final index = fieldCaseStore.indexWhere((c) => c.id == caseId);
-    if (index != -1) {
-      fieldCaseStore[index].status = FieldCaseStatus.approved;
-      if (comment != null && comment.isNotEmpty) {
-        fieldCaseStore[index].reviewComment = comment;
-      }
-      notifyListeners();
-    }
-  }
-
-  void rejectCase(String caseId, String reason) {
-    final index = fieldCaseStore.indexWhere((c) => c.id == caseId);
-    if (index != -1) {
-      fieldCaseStore[index].status = FieldCaseStatus.rejected;
-      fieldCaseStore[index].reviewComment = reason;
-      notifyListeners();
-    }
-  }
-
-  void markCaseAsConverted(String caseId) {
+  void markCaseAsConverted(String caseId, {String? token, String? baseUrl}) {
     final index = fieldCaseStore.indexWhere((c) => c.id == caseId);
     if (index != -1) {
       fieldCaseStore[index].status = FieldCaseStatus.approved;
@@ -445,8 +425,11 @@ class DataService extends ChangeNotifier {
   // 내부 훈련 리포트 동기화 로직 (안전한 시간/ID 기반 병합)
   Future<void> _fetchReportsInternal(String token, String baseUrl) async {
     try {
+      final prefs = await SharedPreferences.getInstance();
+      final deviceId = prefs.getString('device_unique_id') ?? '';
+
       final response = await http.get(
-        Uri.parse('$baseUrl/users/me/reports'),
+        Uri.parse('$baseUrl/users/me/reports?device_id=$deviceId'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $token',
@@ -595,8 +578,11 @@ class DataService extends ChangeNotifier {
 
   Future<void> _saveReportToBackend(PracticeReport report, String token, String baseUrl) async {
     try {
+      final prefs = await SharedPreferences.getInstance();
+      final deviceId = prefs.getString('device_unique_id') ?? '';
+
       final response = await http.post(
-        Uri.parse('$baseUrl/users/me/reports'),
+        Uri.parse('$baseUrl/users/me/reports?device_id=$deviceId'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $token',

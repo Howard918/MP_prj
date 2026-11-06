@@ -82,6 +82,30 @@ class ScenarioResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+# 현장 사례 요청/응답 스키마
+class FieldCaseCreate(BaseModel):
+    id: Optional[str] = None
+    industry: str
+    title: str
+    situation: str
+    response_details: str
+    status: Optional[str] = "pending"
+    is_converted_to_scenario: Optional[bool] = False
+
+class FieldCaseResponse(BaseModel):
+    id: str
+    author_id: str
+    author_name: str
+    industry: str
+    title: str
+    situation: str
+    response_details: str
+    status: str
+    is_converted_to_scenario: bool
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
 # 유저 프로필 응답 스키마 (Flutter 앱 호환)
 class UserResponse(BaseModel):
     id: int

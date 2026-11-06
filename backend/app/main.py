@@ -15,7 +15,7 @@ if backend_dir not in sys.path:
 from app.database import engine, Base, SessionLocal
 from app.models import User, ScenarioModel
 from app.security import get_password_hash
-from app.routers import auth, users, admin, scenarios, ai
+from app.routers import auth, users, admin, scenarios, cases, ai
 
 # 데이터베이스 테이블 생성
 Base.metadata.create_all(bind=engine)
@@ -40,6 +40,7 @@ app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(admin.router)
 app.include_router(scenarios.router)
+app.include_router(cases.router)
 app.include_router(ai.router)
 
 def get_active_local_ip() -> str:
@@ -71,6 +72,7 @@ def update_flutter_api_config(active_ip: str):
 def migrate_db_schema():
     db: Session = SessionLocal()
     try:
+        # practice_reports 테이블 점검
         result = db.execute(text("PRAGMA table_info(practice_reports)"))
         columns = [row[1] for row in result.fetchall()]
 
@@ -79,6 +81,7 @@ def migrate_db_schema():
             db.commit()
             print("DB Migration: 'admin_comment' column added to 'practice_reports' table successfully.")
 
+        # users 테이블 점검
         result_users = db.execute(text("PRAGMA table_info(users)"))
         user_columns = [row[1] for row in result_users.fetchall()]
 
@@ -87,6 +90,7 @@ def migrate_db_schema():
             db.commit()
             print("DB Migration: 'current_device_id' column added to 'users' table successfully.")
 
+        # field_cases 테이블 생성 여부 확인 및 자동 생성은 Base.metadata.create_all 이 담당함
     except Exception as e:
         print(f"DB Migration Note: {e}")
     finally:

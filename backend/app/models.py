@@ -46,3 +46,17 @@ class ScenarioModel(Base):
     reference_codes = Column(JSON, default=list, nullable=True)
     is_published = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+class FieldCaseModel(Base):
+    __tablename__ = "field_cases"
+
+    id = Column(String, primary_key=True, index=True)
+    author_id = Column(String, nullable=False)
+    author_name = Column(String, nullable=False)
+    industry = Column(String, nullable=False)
+    title = Column(String, nullable=False)
+    situation = Column(String, nullable=False)
+    response_details = Column(String, nullable=False)
+    status = Column(String, default="pending", nullable=False)  # pending, approved, rejected
+    is_converted_to_scenario = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

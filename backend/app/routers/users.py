@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from datetime import datetime
 
 from ..database import get_db
@@ -10,13 +10,13 @@ from ..security import get_current_user
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
-# 다중 기기 로그인 중복 체크 종속성 함수
+# 다중 기기 로그인 중복 체크 종속성 함수 (하위 호환성을 위해 device_id를 선택적으로 허용)
 def get_current_active_device_user(
-    device_id: str,
+    device_id: Optional[str] = None,
     current_user: User = Depends(get_current_user)
 ) -> User:
-    # 요청 보낸 기기의 device_id와 DB의 최신 로그인 device_id가 다르면 로그아웃 유도
-    if current_user.current_device_id and current_user.current_device_id != device_id:
+    # 기기 ID가 제공되었고, DB에 저장된 최신 기기 ID와 다를 경우에만 중복 로그인 차단
+    if device_id and current_user.current_device_id and current_user.current_device_id != device_id:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="다른 기기에서 동일한 유저로 로그인이 감지되었습니다.\n현재 기기에서는 로그아웃되며, 계속 이용하시려면 다시 로그인해 주세요."
@@ -26,7 +26,7 @@ def get_current_active_device_user(
 # 1. [GET] /users/me: 현재 로그인한 유저 프로필 및 훈련 데이터 반환
 @router.get("/me", response_model=UserResponse)
 def get_my_profile(
-    device_id: str,
+    device_id: Optional[str] = None,
     current_user: User = Depends(get_current_user)
 ):
     # 명시적 의존성 주입을 통해 기기 일치 여부 검증
@@ -37,7 +37,7 @@ def get_my_profile(
 @router.post("/me/reports", response_model=PracticeReportResponse, status_code=status.HTTP_201_CREATED)
 def create_practice_report(
     report_in: PracticeReportCreate,
-    device_id: str,
+    device_id: Optional[str] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -84,7 +84,7 @@ def create_practice_report(
 # 3. [GET] /users/me/reports: 로그인한 유저의 과거 전체 훈련 리포트 목록 조회
 @router.get("/me/reports", response_model=List[PracticeReportResponse])
 def get_my_reports(
-    device_id: str,
+    device_id: Optional[str] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
