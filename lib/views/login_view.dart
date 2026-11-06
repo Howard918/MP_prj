@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:http/http.dart' as http;
 import '../services/auth_service.dart';
 import 'dashboard_view.dart';
 import 'register_view.dart';
@@ -39,7 +40,7 @@ class _LoginViewState extends ConsumerState<LoginView> with SingleTickerProvider
       TweenSequenceItem(tween: Tween(begin: -12.0, end: 12.0), weight: 2),
       TweenSequenceItem(tween: Tween(begin: 12.0, end: -12.0), weight: 2),
       TweenSequenceItem(tween: Tween(begin: -12.0, end: 12.0), weight: 2),
-      TweenSequenceItem(tween: Tween(begin: 12.0, end: 0.0), weight: 1),
+      TweenSequenceItem(tween: Tween(begin: -12.0, end: 0.0), weight: 1),
     ]).animate(CurvedAnimation(parent: _shakeController, curve: Curves.easeInOut));
 
     // 첫 프레임 렌더링 후 자동 로그인 체크 실행
@@ -110,15 +111,111 @@ class _LoginViewState extends ConsumerState<LoginView> with SingleTickerProvider
         MaterialPageRoute(builder: (_) => const Dashboard()),
       );
     } else {
-      // 1. 비밀번호 입력란 전량 삭제
-      passwordController.clear();
-
-      // 2. 구체적인 오류 메시지 (서버 미구동 또는 자격증명 실패) 및 흔들리는 애니메이션 실행
       setState(() {
-        errorMessage = result.errorMessage ?? '로그인에 실패했습니다.';
+        errorMessage = result.errorMessage;
       });
       _shakeController.forward(from: 0.0);
     }
+  }
+
+  // ⚙️ 실기기/에뮬레이터 백엔드 서버 URL 설정 및 연결 테스트 다이얼로그
+  void _showServerConfigDialog() {
+    final authService = ref.read(authServiceProvider);
+    final urlController = TextEditingController(text: authService.baseUrl);
+    bool isTesting = false;
+    String? testResult;
+
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.settings_ethernet, color: Color(0xff146b59)),
+              SizedBox(width: 8),
+              Text('서버 연결 주소 설정', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('실기기 무선 연결 시 백엔드 IP 주소(예: http://192.168.x.x:8000)를 설정합니다.', style: TextStyle(fontSize: 12, color: Colors.grey)),
+              const SizedBox(height: 12),
+              TextField(
+                controller: urlController,
+                decoration: const InputDecoration(
+                  labelText: '백엔드 서버 URL',
+                  hintText: 'http://192.168.0.2:8000',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              if (testResult != null) ...[
+                const SizedBox(height: 10),
+                Text(
+                  testResult!,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                    color: testResult!.contains('성공') ? Colors.green : Colors.red,
+                  ),
+                ),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('취소'),
+            ),
+            OutlinedButton(
+              onPressed: isTesting ? null : () async {
+                setDialogState(() {
+                  isTesting = true;
+                  testResult = '연결 테스트 진행 중...';
+                });
+                final testUrl = urlController.text.trim();
+                try {
+                  final resp = await http.get(Uri.parse('$testUrl/')).timeout(const Duration(seconds: 3));
+                  if (resp.statusCode == 200) {
+                    setDialogState(() {
+                      isTesting = false;
+                      testResult = '연결 성공! 백엔드 서버가 활성화되어 있습니다.';
+                    });
+                  } else {
+                    setDialogState(() {
+                      isTesting = false;
+                      testResult = '연결 실패 (응답 코드: ${resp.statusCode})';
+                    });
+                  }
+                } catch (e) {
+                  setDialogState(() {
+                    isTesting = false;
+                    testResult = '연결 실패: $e';
+                  });
+                }
+              },
+              child: const Text('연결 테스트'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: const Color(0xff146b59)),
+              onPressed: () async {
+                await authService.updateCustomBaseUrl(urlController.text.trim());
+                if (ctx.mounted) {
+                  Navigator.pop(ctx);
+                }
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('서버 연결 주소가 설정되었습니다: ${authService.baseUrl}')),
+                  );
+                }
+              },
+              child: const Text('저장'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -263,12 +360,21 @@ class _LoginViewState extends ConsumerState<LoginView> with SingleTickerProvider
                   child: const Text('아직 계정이 없으신가요? 회원가입하기'),
                 ),
 
-                const SizedBox(height: 20),
+                const SizedBox(height: 8),
+
+                // 서버 연결 설정 다이얼로그 버튼
+                TextButton.icon(
+                  onPressed: _showServerConfigDialog,
+                  icon: const Icon(Icons.settings_ethernet, size: 18),
+                  label: const Text('서버 연결 주소 설정 및 테스트', style: TextStyle(fontSize: 13, color: Colors.grey)),
+                ),
+
+                const SizedBox(height: 16),
                 const Divider(),
                 const SizedBox(height: 16),
 
                 const Text(
-                  '⚡ 빠른 테스트 계정 로그인',
+                  '빠른 테스트 계정 로그인',
                   textAlign: TextAlign.center,
                   style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.grey),
                 ),
@@ -293,7 +399,7 @@ class _LoginViewState extends ConsumerState<LoginView> with SingleTickerProvider
                       ),
                     ),
                   ],
-                )
+                ),
               ],
             ),
           ),

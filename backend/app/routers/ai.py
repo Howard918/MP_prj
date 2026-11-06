@@ -1,8 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
-import httpx
+from typing import List, Optional
+import urllib.request
+import urllib.error
 import json
+import asyncio
 
 from ..config import settings
 from ..schemas import ChatMessageSchema
@@ -19,12 +21,8 @@ class EvaluationRequest(BaseModel):
     messages: List[ChatMessageSchema]
     criteria: str
 
-# 1. [POST] /ai/chat: 백엔드에서 OpenAI Chat Completions 프록시 호출
-@router.post("/chat")
-async def ai_chat(
-    req: ChatRequest,
-    current_user: User = Depends(get_current_user)
-):
+# 파이썬 표준 라이브러리(urllib)를 활용한 동기식 OpenAI API 호출 헬퍼 (별도 패키지 설치 에러 방지)
+def _call_openai_api_sync(payload: dict, timeout_sec: float = 20.0) -> dict:
     api_key = settings.OPENAI_API_KEY.strip()
     if not api_key:
         raise HTTPException(
@@ -37,31 +35,45 @@ async def ai_chat(
         "Authorization": f"Bearer {api_key}"
     }
 
-    payload = {
-        "model": "gpt-4o-mini",
-        "response_format": {"type": "json_object"},
-        "messages": [m.model_dump() for m in req.messages],
-        "temperature": req.temperature
-    }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=data,
+        headers=headers,
+        method="POST"
+    )
 
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
+        with urllib.request.urlopen(req, timeout=timeout_sec) as response:
+            body = response.read().decode("utf-8")
+            data_json = json.loads(body)
+            content_str = data_json["choices"][0]["message"]["content"]
+            return json.loads(content_str)
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode("utf-8", errors="ignore")
+        raise HTTPException(
+            status_code=e.code,
+            detail=f"OpenAI API 에러: {err_body}"
+        )
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
             detail=f"OpenAI API 통신 연결 실패: {str(e)}"
         )
 
-    if resp.status_code != 200:
-        raise HTTPException(
-            status_code=resp.status_code,
-            detail=f"OpenAI API 호출 에러: {resp.text}"
-        )
-
-    data = resp.json()
-    content_str = data["choices"][0]["message"]["content"]
-    return json.loads(content_str)
+# 1. [POST] /ai/chat: 백엔드에서 OpenAI Chat Completions 프록시 호출
+@router.post("/chat")
+async def ai_chat(
+    req: ChatRequest,
+    current_user: User = Depends(get_current_user)
+):
+    payload = {
+        "model": "gpt-4o-mini",
+        "response_format": {"type": "json_object"},
+        "messages": [m.model_dump() for m in req.messages],
+        "temperature": req.temperature
+    }
+    return await asyncio.to_thread(_call_openai_api_sync, payload, 15.0)
 
 # 2. [POST] /ai/evaluate: 백엔드에서 상황극 최종 평가 프록시 수행
 @router.post("/evaluate")
@@ -69,13 +81,6 @@ async def ai_evaluate(
     req: EvaluationRequest,
     current_user: User = Depends(get_current_user)
 ):
-    api_key = settings.OPENAI_API_KEY.strip()
-    if not api_key:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="백엔드 서버에 OPENAI_API_KEY가 설정되지 않았습니다."
-        )
-
     eval_system_prompt = f"""다음은 아르바이트생(user)과 고객(assistant) 간의 대화 기록입니다.
 
 [응대 조치 기준]
@@ -96,32 +101,9 @@ async def ai_evaluate(
 
     eval_messages = [m.model_dump() for m in req.messages] + [{"role": "system", "content": eval_system_prompt}]
 
-    headers = {
-        "Content-Type": "application/json; charset=utf-8",
-        "Authorization": f"Bearer {api_key}"
-    }
-
     payload = {
         "model": "gpt-4o-mini",
         "response_format": {"type": "json_object"},
         "messages": eval_messages
     }
-
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail=f"OpenAI 평가 통신 연결 실패: {str(e)}"
-        )
-
-    if resp.status_code != 200:
-        raise HTTPException(
-            status_code=resp.status_code,
-            detail=f"OpenAI 평가 API 호출 에러: {resp.text}"
-        )
-
-    data = resp.json()
-    content_str = data["choices"][0]["message"]["content"]
-    return json.loads(content_str)
+    return await asyncio.to_thread(_call_openai_api_sync, payload, 20.0)

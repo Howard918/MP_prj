@@ -4,10 +4,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
 import '../models/user_model.dart';
 import '../models/practice_report.dart';
 import '../utils/server_connection_handler.dart';
+import '../config/api_config.dart';
 import 'data_service.dart';
 
 final authServiceProvider = ChangeNotifierProvider<AuthService>((ref) => AuthService());
@@ -32,17 +32,39 @@ class AuthService extends ChangeNotifier {
 
   Timer? _healthTimer;
 
+  String? _customBaseUrl;
   static const String _tokenKey = 'jwt_access_token';
   static const String _savedUserKey = 'saved_user_id';
+  static const String _customUrlKey = 'custom_backend_url';
 
-  // FastAPI 백엔드 서버 주소 (.env 선언 우선 적용, 안드로이드 에뮬레이터 루프백 기본 적용)
+  Future<void> initServerUrl() async {
+    final prefs = await SharedPreferences.getInstance();
+    _customBaseUrl = prefs.getString(_customUrlKey);
+  }
+
+  // FastAPI 백엔드 서버 주소 (커스텀 설정 우선 적용, 자동 감지 IP 우선, 에뮬레이터 루프백 기본)
   String get baseUrl {
-    final envUrl = dotenv.env['BACKEND_API_URL'];
-    if (envUrl != null && envUrl.isNotEmpty) return envUrl;
-    if (defaultTargetPlatform == TargetPlatform.android) {
-      return 'http://10.0.2.2:8000'; // 안드로이드 에뮬레이터 호스트 주소
+    if (_customBaseUrl != null && _customBaseUrl!.isNotEmpty) {
+      return _customBaseUrl!;
     }
-    return 'http://localhost:8000'; // iOS / Web / Desktop 호스트 주소
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      if (ApiConfig.backendUrl.contains('127.0.0.1')) {
+        return 'http://10.0.2.2:8000'; // 안드로이드 에뮬레이터 기본 주소
+      }
+    }
+    return ApiConfig.backendUrl; // 자동 감지된 백엔드 IP 주소
+  }
+
+  Future<void> updateCustomBaseUrl(String newUrl) async {
+    final cleanUrl = newUrl.trim();
+    _customBaseUrl = cleanUrl;
+    final prefs = await SharedPreferences.getInstance();
+    if (cleanUrl.isNotEmpty) {
+      await prefs.setString(_customUrlKey, cleanUrl);
+    } else {
+      await prefs.remove(_customUrlKey);
+    }
+    notifyListeners();
   }
 
   // 🔴 백엔드 서버 주기적 상태 헬스체크 (10초 주기로 자동 감지)

@@ -1,6 +1,7 @@
 import sys
 import os
 import uvicorn
+import socket
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -41,6 +42,31 @@ app.include_router(admin.router)
 app.include_router(scenarios.router)
 app.include_router(ai.router)
 
+def get_active_local_ip() -> str:
+    """현재 PC가 연결된 활성 Wi-Fi / AP의 실시간 IPv4 주소를 자동 감지합니다."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+        return local_ip
+    except Exception:
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except Exception:
+            return "127.0.0.1"
+
+def update_flutter_api_config(active_ip: str):
+    """감지된 실시간 AP 주소를 Flutter 앱의 설정(api_config.dart)에 자동 동기화합니다."""
+    config_dir = os.path.join(os.path.dirname(backend_dir), "lib", "config")
+    os.makedirs(config_dir, exist_ok=True)
+    config_path = os.path.join(config_dir, "api_config.dart")
+
+    with open(config_path, "w", encoding="utf-8") as f:
+        f.write("class ApiConfig {\n")
+        f.write(f"  static const String backendUrl = 'http://{active_ip}:8000';\n")
+        f.write("}\n")
+
 # SQLite 데이터베이스 자동 마이그레이션 (기존 DB에 신규 컬럼 추가)
 def migrate_db_schema():
     db: Session = SessionLocal()
@@ -57,9 +83,19 @@ def migrate_db_schema():
     finally:
         db.close()
 
-# 서버 시동 시 초기 시드 데이터 생성 (정식 회원가입 및 DB로 전면 관리되므로 하드코딩 더미 유저 생성 삭제)
+# 서버 시동 시 초기 시드 데이터 생성 및 AP 자동 IP 감지 배너 출력
 @app.on_event("startup")
 def seed_initial_data():
+    active_ip = get_active_local_ip()
+    update_flutter_api_config(active_ip)
+
+    print("\n" + "=" * 65)
+    print("🚀 첫 근무 노트 백엔드 API 서버가 활성화되었습니다!")
+    print(f"📱 실기기(스마트폰 Wi-Fi/AP) 접속 주소: http://{active_ip}:8000")
+    print(f"💻 안드로이드 에뮬레이터 접속 주소:   http://10.0.2.2:8000")
+    print(f"🖥️ PC 로컬 웹/데스크톱 접속 주소:      http://localhost:8000")
+    print("=" * 65 + "\n")
+
     migrate_db_schema()  # DB 스키마 마이그레이션 우선 실행
 
     db: Session = SessionLocal()
