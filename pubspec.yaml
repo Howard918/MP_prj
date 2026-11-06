@@ -39,6 +39,7 @@ dependencies:
   speech_to_text: ^7.0.0
   flutter_tts: ^4.0.0
   shared_preferences: ^2.3.2
+  uuid: ^4.6.0
 
 
 dev_dependencies:

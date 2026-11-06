@@ -13,11 +13,13 @@ class UserCreate(BaseModel):
 class UserLogin(BaseModel):
     email: str  # 이메일 주소 또는 유저 아이디
     password: str
+    device_id: str  # 로그인 시전 기기 식별자 추가
 
 # JWT 토큰 응답 스키마
 class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    device_id: str
 
 class TokenData(BaseModel):
     email: Optional[str] = None
@@ -89,5 +91,6 @@ class UserResponse(BaseModel):
     total_sessions: int = 0
     weakness_categories: List[str] = []
     average_score: float = 0.0
+    current_device_id: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)

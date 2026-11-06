@@ -33,7 +33,7 @@ def register(user_in: UserCreate, db: Session = Depends(get_db)):
     db.refresh(new_user)
     return new_user
 
-# 2. [POST] /auth/login: 로그인 및 JWT 토큰 발급 (JSON Body 수신)
+# 2. [POST] /auth/login: 로그인 및 JWT 토큰 발급 (다중 기기 중복 로그인 방지)
 @router.post("/login", response_model=Token)
 def login(
     login_data: UserLogin,
@@ -50,6 +50,11 @@ def login(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # 새로운 기기 ID 발급 및 기록하여 기존 기기 로그아웃 강제
+    user.current_device_id = login_data.device_id
+    db.add(user)
+    db.commit()
+
     # JWT 액세스 토큰 생성
     access_token = create_access_token(data={"sub": user.email, "role": user.role})
-    return Token(access_token=access_token, token_type="bearer")
+    return Token(access_token=access_token, token_type="bearer", device_id=login_data.device_id)

@@ -9,14 +9,16 @@ import '../models/practice_report.dart';
 import '../utils/server_connection_handler.dart';
 import '../config/api_config.dart';
 import 'data_service.dart';
+import 'package:uuid/uuid.dart';
 
 final authServiceProvider = ChangeNotifierProvider<AuthService>((ref) => AuthService());
 
 class LoginResult {
   final bool success;
   final String? errorMessage;
+  final bool isConflict;
 
-  LoginResult({required this.success, this.errorMessage});
+  LoginResult({required this.success, this.errorMessage, this.isConflict = false});
 }
 
 class RegisterResult {
@@ -36,10 +38,26 @@ class AuthService extends ChangeNotifier {
   static const String _tokenKey = 'jwt_access_token';
   static const String _savedUserKey = 'saved_user_id';
   static const String _customUrlKey = 'custom_backend_url';
+  
+  // 기기 식별을 위한 고유 Device ID 캐시
+  String? _deviceId;
 
   Future<void> initServerUrl() async {
     final prefs = await SharedPreferences.getInstance();
     _customBaseUrl = prefs.getString(_customUrlKey);
+  }
+
+  // 기기 고유 ID 생성 또는 조회 (앱 재설치 전까지 유지)
+  Future<String> getDeviceId() async {
+    if (_deviceId != null && _deviceId!.isNotEmpty) return _deviceId!;
+    final prefs = await SharedPreferences.getInstance();
+    String? storedId = prefs.getString('device_unique_id');
+    if (storedId == null || storedId.isEmpty) {
+      storedId = const Uuid().v4();
+      await prefs.setString('device_unique_id', storedId);
+    }
+    _deviceId = storedId;
+    return _deviceId!;
   }
 
   // FastAPI 백엔드 서버 주소 (커스텀 설정 우선 적용, 자동 감지 IP 우선, 에뮬레이터 루프백 기본)
@@ -79,6 +97,9 @@ class AuthService extends ChangeNotifier {
       if (!isAlive && currentUser != null) {
         stopHealthCheck();
         ServerConnectionHandler.handleDisconnection('백엔드 서버와의 통신이 중단되었습니다.\n서버 작동 상태를 확인 후 다시 로그인해 주세요.');
+      } else {
+        // 살아있다면 다중 기기 중복 로그인 충돌(409) 여부도 주기적으로 체크
+        await _fetchUserProfileFromBackend(accessToken!);
       }
     });
   }
@@ -119,15 +140,18 @@ class AuthService extends ChangeNotifier {
     return false;
   }
 
-  // 2. 로그인 (FastAPI 서버 통신)
+  // 2. 로그인 (FastAPI 서버 통신, Device ID 포함)
   Future<LoginResult> login(String id, String password) async {
     try {
+      final deviceId = await getDeviceId();
+      
       final response = await http.post(
         Uri.parse('$baseUrl/auth/login'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'email': id,
           'password': password,
+          'device_id': deviceId,
         }),
       ).timeout(const Duration(seconds: 5));
 
@@ -217,11 +241,13 @@ class AuthService extends ChangeNotifier {
     }
   }
 
-  // 4. 백엔드 GET /users/me 엔드포인트 호출
+  // 4. 백엔드 GET /users/me 엔드포인트 호출 (기기 중복 검증 포함)
   Future<bool> _fetchUserProfileFromBackend(String token) async {
     try {
+      final deviceId = await getDeviceId();
+      
       final response = await http.get(
-        Uri.parse('$baseUrl/users/me'),
+        Uri.parse('$baseUrl/users/me?device_id=$deviceId'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $token',
@@ -233,7 +259,12 @@ class AuthService extends ChangeNotifier {
         currentUser = UserModel.fromJson(userData);
         notifyListeners();
         return true;
+      } else if (response.statusCode == 409 && currentUser != null) {
+        // 다중 기기 중복 로그인 감지 처리
+        stopHealthCheck();
+        ServerConnectionHandler.handleDisconnection('다른 기기에서 동일한 유저로 로그인이 감지되었습니다.\n현재 기기에서는 로그아웃되며, 다시 이용하시려면 로그인해 주세요.');
       } else if (response.statusCode == 401 && currentUser != null) {
+        // 인증 만료 및 서버 연결 끊김 처리
         stopHealthCheck();
         ServerConnectionHandler.handleDisconnection('인증 세션이 만료되었습니다.\n다시 로그인해 주세요.');
       }

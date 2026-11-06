@@ -14,6 +14,7 @@ class User(Base):
     total_sessions = Column(Integer, default=0, nullable=False)
     weakness_categories = Column(JSON, default=list, nullable=True)  # 예: ["주문 재료 품절 대응", "환불 안내"]
     average_score = Column(Float, default=0.0, nullable=False)
+    current_device_id = Column(String, nullable=True) # 다중 기기 중복 로그인 방지용 디바이스 식별자
 
     reports = relationship("PracticeReportModel", back_populates="user", cascade="all, delete-orphan")
 

@@ -78,6 +78,15 @@ def migrate_db_schema():
             db.execute(text("ALTER TABLE practice_reports ADD COLUMN admin_comment TEXT"))
             db.commit()
             print("DB Migration: 'admin_comment' column added to 'practice_reports' table successfully.")
+
+        result_users = db.execute(text("PRAGMA table_info(users)"))
+        user_columns = [row[1] for row in result_users.fetchall()]
+
+        if "current_device_id" not in user_columns:
+            db.execute(text("ALTER TABLE users ADD COLUMN current_device_id TEXT"))
+            db.commit()
+            print("DB Migration: 'current_device_id' column added to 'users' table successfully.")
+
     except Exception as e:
         print(f"DB Migration Note: {e}")
     finally:
