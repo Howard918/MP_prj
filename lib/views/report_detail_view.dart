@@ -75,6 +75,10 @@ class ReportDetailView extends ConsumerWidget {
           ),
           const SizedBox(height: 16),
 
+          // 📈 회차별 점수 변화 시각적 그래프 카드
+          ScoreTrendChart(reports: reports),
+          const SizedBox(height: 16),
+
           // 비교 메커니즘 카드 (Comparison Summary Card)
           if (reports.length > 1)
             Card(
@@ -135,8 +139,12 @@ class ReportDetailView extends ConsumerWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text('회차별 연습 히스토리 (${reports.length}개)', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              Expanded(
+                child: Text('회차별 연습 히스토리 (${reports.length}개)', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              ),
+              const SizedBox(width: 8),
               ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 12)),
                 onPressed: () {
                   Navigator.push(
                     context,
@@ -318,4 +326,223 @@ class ReportDetailView extends ConsumerWidget {
     if (score < 70) return Colors.red.shade600;
     return Colors.orange.shade700;
   }
+}
+
+class ScoreTrendChart extends StatelessWidget {
+  final List<PracticeReport> reports;
+
+  const ScoreTrendChart({super.key, required this.reports});
+
+  @override
+  Widget build(BuildContext context) {
+    if (reports.isEmpty) {
+      return const Card(
+        child: Padding(
+          padding: EdgeInsets.all(20.0),
+          child: Center(child: Text('저장된 훈련 리포트가 없습니다.')),
+        ),
+      );
+    }
+
+    // 날짜 오름차순 정렬 (회차 1부터 N까지 시순)
+    final sorted = List<PracticeReport>.from(reports)
+      ..sort((a, b) => a.dateTime.compareTo(b.dateTime));
+
+    final scores = sorted.map((r) => r.score).toList();
+    final avgScore = scores.reduce((a, b) => a + b) / scores.length;
+    final maxScore = scores.reduce((a, b) => a > b ? a : b);
+    final minScore = scores.reduce((a, b) => a < b ? a : b);
+
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(18.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Row(
+                  children: [
+                    Icon(Icons.show_chart_rounded, color: Color(0xff146b59), size: 22),
+                    SizedBox(width: 8),
+                    Text('회차별 점수 변화 그래프', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  ],
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: const Color(0xff146b59).withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    '평균 ${avgScore.toStringAsFixed(1)}점',
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xff146b59)),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  _buildMetricChip('총 훈련', '${sorted.length}회차', Colors.blue),
+                  const SizedBox(width: 6),
+                  _buildMetricChip('최고 점수', '$maxScore점', Colors.green),
+                  const SizedBox(width: 6),
+                  _buildMetricChip('최저 점수', '$minScore점', Colors.orange),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              height: 170,
+              width: double.infinity,
+              child: CustomPaint(
+                painter: _ScoreChartPainter(scores: scores),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMetricChip(String label, String value, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.2)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text('$label: ', style: const TextStyle(fontSize: 11, color: Colors.black54)),
+          Text(value, style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: color)),
+        ],
+      ),
+    );
+  }
+}
+
+class _ScoreChartPainter extends CustomPainter {
+  final List<int> scores;
+
+  _ScoreChartPainter({required this.scores});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (scores.isEmpty) return;
+
+    final paintGrid = Paint()
+      ..color = Colors.grey.shade200
+      ..strokeWidth = 1.0;
+
+    final paintLine = Paint()
+      ..color = const Color(0xff146b59)
+      ..strokeWidth = 3.0
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round;
+
+    final paintFill = Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          const Color(0xff146b59).withValues(alpha: 0.25),
+          const Color(0xff146b59).withValues(alpha: 0.01),
+        ],
+      ).createShader(Rect.fromLTWH(0, 0, size.width, size.height));
+
+    final paintDot = Paint()
+      ..color = const Color(0xff146b59)
+      ..style = PaintingStyle.fill;
+
+    final paintDotBorder = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.fill;
+
+    const topPadding = 24.0;
+    const bottomPadding = 24.0;
+    final chartHeight = size.height - topPadding - bottomPadding;
+
+    // Y축 가이드 라인 (0, 50, 100점)
+    for (int yVal in [0, 50, 100]) {
+      final y = size.height - bottomPadding - (yVal / 100.0) * chartHeight;
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), paintGrid);
+
+      final textPainter = TextPainter(
+        text: TextSpan(text: '$yVal', style: TextStyle(fontSize: 9, color: Colors.grey.shade400)),
+        textDirection: TextDirection.ltr,
+      );
+      textPainter.layout();
+      textPainter.paint(canvas, Offset(0, y - 12));
+    }
+
+    final count = scores.length;
+    final points = <Offset>[];
+
+    for (int i = 0; i < count; i++) {
+      final x = count == 1 ? size.width / 2 : (i / (count - 1)) * (size.width - 32) + 16;
+      final y = size.height - bottomPadding - (scores[i] / 100.0) * chartHeight;
+      points.add(Offset(x, y));
+    }
+
+    // 영역 그래디언트 면적 채우기
+    if (points.length > 1) {
+      final pathFill = Path()..moveTo(points.first.dx, size.height - bottomPadding);
+      for (final p in points) {
+        pathFill.lineTo(p.dx, p.dy);
+      }
+      pathFill.lineTo(points.last.dx, size.height - bottomPadding);
+      pathFill.close();
+      canvas.drawPath(pathFill, paintFill);
+    }
+
+    // 연결 선 그리기
+    if (points.length > 1) {
+      final pathLine = Path()..moveTo(points.first.dx, points.first.dy);
+      for (int i = 1; i < points.length; i++) {
+        pathLine.lineTo(points[i].dx, points[i].dy);
+      }
+      canvas.drawPath(pathLine, paintLine);
+    }
+
+    // 각 점(데이터 노드) 및 점수/회차 텍스트 렌더링
+    for (int i = 0; i < points.length; i++) {
+      final p = points[i];
+      final score = scores[i];
+
+      canvas.drawCircle(p, 5.5, paintDot);
+      canvas.drawCircle(p, 2.5, paintDotBorder);
+
+      final scorePainter = TextPainter(
+        text: TextSpan(
+          text: '$score점',
+          style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xff146b59)),
+        ),
+        textDirection: TextDirection.ltr,
+      );
+      scorePainter.layout();
+      scorePainter.paint(canvas, Offset(p.dx - scorePainter.width / 2, p.dy - 16));
+
+      final labelPainter = TextPainter(
+        text: TextSpan(
+          text: '${i + 1}회',
+          style: TextStyle(fontSize: 9.5, color: Colors.grey.shade600),
+        ),
+        textDirection: TextDirection.ltr,
+      );
+      labelPainter.layout();
+      labelPainter.paint(canvas, Offset(p.dx - labelPainter.width / 2, size.height - 18));
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _ScoreChartPainter oldDelegate) => oldDelegate.scores != scores;
 }

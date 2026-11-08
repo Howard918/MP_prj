@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
 import '../models/chat_model.dart';
+import '../models/rag_result.dart';
 import '../utils/server_connection_handler.dart';
 
 class OpenAIService {
@@ -79,6 +80,44 @@ class OpenAIService {
       }
     } catch (e) {
       debugPrint('AI 평가 프록시 통신 오류: $e');
+      rethrow;
+    }
+  }
+
+  // RAG 파이프라인(매뉴얼 검색) 프록시 호출
+  Future<RagResult> searchAssistant(
+    String query,
+    String baseUrl,
+    String? token,
+  ) async {
+    if (token == null || token.isEmpty) {
+      throw Exception('인증 토큰이 없습니다. 다시 로그인해 주세요.');
+    }
+
+    try {
+      final response = await http.post(
+        Uri.parse('$baseUrl/ai/search'),
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Authorization': 'Bearer $token',
+        },
+        body: jsonEncode({
+          'query': query,
+        }),
+      ).timeout(const Duration(seconds: 20));
+
+      if (response.statusCode == 200) {
+        final resultJson = jsonDecode(utf8.decode(response.bodyBytes));
+        return RagResult.fromJson(resultJson);
+      } else if (response.statusCode == 401) {
+        ServerConnectionHandler.handleDisconnection('인증 세션이 만료되었습니다.\n다시 로그인해 주세요.');
+        throw Exception('Unauthorized');
+      } else {
+        debugPrint('AI Search Proxy Error: ${response.statusCode} - ${response.body}');
+        throw Exception('AI 어시스턴트 검색 실패');
+      }
+    } catch (e) {
+      debugPrint('AI 검색 프록시 통신 오류: $e');
       rethrow;
     }
   }

@@ -14,6 +14,7 @@ class UserLogin(BaseModel):
     email: str  # 이메일 주소 또는 유저 아이디
     password: str
     device_id: str  # 로그인 시전 기기 식별자 추가
+    force: Optional[bool] = False  # 기존 기기 강제 로그아웃 동의 옵션
 
 # JWT 토큰 응답 스키마
 class Token(BaseModel):
@@ -106,6 +107,16 @@ class FieldCaseResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+# 공식 근거/법령 지침 스키마
+class OfficialReferenceSchema(BaseModel):
+    code: str
+    name: str
+    kind: str
+    scope: str
+    url: Optional[str] = ""
+
+    model_config = ConfigDict(from_attributes=True)
+
 # 유저 프로필 응답 스키마 (Flutter 앱 호환)
 class UserResponse(BaseModel):
     id: int
@@ -118,3 +129,17 @@ class UserResponse(BaseModel):
     current_device_id: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+# AI 어시스턴트 RAG 검색 결과 관련 스키마
+class RagReferenceSchema(BaseModel):
+    id: str
+    title: str
+    url: str
+    match_text: str
+
+class RagResponseSchema(BaseModel):
+    answer: str
+    references: List[RagReferenceSchema]
+
+class SearchRequest(BaseModel):
+    query: str

@@ -4,8 +4,8 @@ from typing import List, Optional
 import uuid
 
 from ..database import get_db
-from ..models import User, ScenarioModel
-from ..schemas import ScenarioCreate, ScenarioResponse
+from ..models import User, ScenarioModel, ReferenceModel
+from ..schemas import ScenarioCreate, ScenarioResponse, OfficialReferenceSchema
 from ..security import get_current_user, get_current_admin_user
 
 router = APIRouter(prefix="/scenarios", tags=["Scenarios"])
@@ -82,3 +82,8 @@ def delete_scenario(
     db.delete(scenario)
     db.commit()
     return None
+
+# 5. [GET] /scenarios/references: 공식 근거/법령 지침 목록 전체 조회
+@router.get("/references", response_model=List[OfficialReferenceSchema])
+def get_references(db: Session = Depends(get_db)):
+    return db.query(ReferenceModel).all()

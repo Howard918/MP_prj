@@ -15,6 +15,7 @@ class User(Base):
     weakness_categories = Column(JSON, default=list, nullable=True)  # 예: ["주문 재료 품절 대응", "환불 안내"]
     average_score = Column(Float, default=0.0, nullable=False)
     current_device_id = Column(String, nullable=True) # 다중 기기 중복 로그인 방지용 디바이스 식별자
+    pending_device_id = Column(String, nullable=True) # 해제 대기 후 진입할 새 기기 식별자
 
     reports = relationship("PracticeReportModel", back_populates="user", cascade="all, delete-orphan")
 
@@ -60,3 +61,13 @@ class FieldCaseModel(Base):
     status = Column(String, default="pending", nullable=False)  # pending, approved, rejected
     is_converted_to_scenario = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+class ReferenceModel(Base):
+    __tablename__ = "references"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    code = Column(String, unique=True, index=True, nullable=False)
+    name = Column(String, nullable=False)
+    kind = Column(String, nullable=False)
+    scope = Column(String, nullable=False)
+    url = Column(String, default="", nullable=False)

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import '../services/auth_service.dart';
+import '../services/data_service.dart';
 import 'dashboard_view.dart';
 import 'register_view.dart';
 
@@ -20,6 +21,7 @@ class _LoginViewState extends ConsumerState<LoginView> with SingleTickerProvider
   
   bool _obscurePassword = true;
   bool _isCheckingAutoLogin = true;
+  bool _isDisconnectingOtherDevice = false; // 기존 기기 접속 해제 알림 전송 및 대기 화면 플래그
   String? errorMessage;
 
   late AnimationController _shakeController;
@@ -70,7 +72,8 @@ class _LoginViewState extends ConsumerState<LoginView> with SingleTickerProvider
 
     try {
       final authService = ref.read(authServiceProvider);
-      final loggedIn = await authService.tryAutoLogin();
+      final dataService = ref.read(dataServiceProvider);
+      final loggedIn = await authService.tryAutoLogin(dataService);
 
       if (loggedIn && mounted) {
         Navigator.pushReplacement(
@@ -91,9 +94,10 @@ class _LoginViewState extends ConsumerState<LoginView> with SingleTickerProvider
     }
   }
 
-  Future<void> _performLogin(String id, String password) async {
+  Future<void> _performLogin(String id, String password, {bool force = false}) async {
     if (id.trim().isEmpty || password.trim().isEmpty) {
       setState(() {
+        _isDisconnectingOtherDevice = false;
         errorMessage = '아이디와 비밀번호를 모두 입력해 주세요.';
       });
       _shakeController.forward(from: 0.0);
@@ -101,21 +105,73 @@ class _LoginViewState extends ConsumerState<LoginView> with SingleTickerProvider
     }
 
     final authService = ref.read(authServiceProvider);
-    final result = await authService.login(id.trim(), password.trim());
+    final dataService = ref.read(dataServiceProvider);
+    final result = await authService.login(id.trim(), password.trim(), force: force, dataService: dataService);
 
     if (!mounted) return;
 
     if (result.success) {
+      setState(() {
+        _isDisconnectingOtherDevice = false;
+      });
+      // 💡 기존 기기 해제 완수 확인 후 곧바로 대시보드로 수직 이동!
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(builder: (_) => const Dashboard()),
       );
+    } else if (result.isConflict) {
+      setState(() {
+        _isDisconnectingOtherDevice = false;
+      });
+      // 🔒 다른 기기 로그인 감지 시 강제 로그아웃 확인 팝업 표시
+      _showForceLoginDialog(id.trim(), password.trim(), result.errorMessage ?? '다른 기기에서 이미 로그인되어 있습니다.');
     } else {
       setState(() {
+        _isDisconnectingOtherDevice = false;
         errorMessage = result.errorMessage;
       });
       _shakeController.forward(from: 0.0);
     }
+  }
+
+  void _showForceLoginDialog(String id, String password, String conflictMsg) {
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => PopScope(
+        canPop: false,
+        child: AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.phonelink_erase_rounded, color: Colors.orange, size: 24),
+              SizedBox(width: 8),
+              Text('중복 로그인 확인', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+            ],
+          ),
+          content: Text(
+            conflictMsg,
+            style: const TextStyle(fontSize: 14, height: 1.4),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('취소'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: const Color(0xff146b59)),
+              onPressed: () {
+                Navigator.pop(ctx);
+                setState(() {
+                  _isDisconnectingOtherDevice = true; // 💡 대기 로딩 화면으로 즉시 전환
+                });
+                _performLogin(id, password, force: true);
+              },
+              child: const Text('기존 기기 로그아웃 후 로그인'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   // ⚙️ 실기기/에뮬레이터 백엔드 서버 URL 설정 및 연결 테스트 다이얼로그
@@ -235,55 +291,118 @@ class _LoginViewState extends ConsumerState<LoginView> with SingleTickerProvider
       );
     }
 
+    // 💡 기존 기기 해제 알림 전송 및 해제 완수 대기 전용 풀스크린 로딩 화면
+    if (_isDisconnectingOtherDevice) {
+      return const Scaffold(
+        body: Center(
+          child: Padding(
+            padding: EdgeInsets.all(24.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                CircularProgressIndicator(color: Color(0xff146b59)),
+                SizedBox(height: 24),
+                Text(
+                  '기존 기기에 로그아웃 알림 전송 중...',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                ),
+                SizedBox(height: 10),
+                Text(
+                  '기존 기기에서 로그아웃 알림을 수신하여 세션을 해제하고 있습니다.\n해제가 완수되는 즉시 이 기기에서 로그인이 최종 허용됩니다.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 13.5, color: Colors.grey, height: 1.4),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
     return Scaffold(
       body: Center(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.all(28.0),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 420),
+          padding: const EdgeInsets.symmetric(horizontal: 24.0),
+          child: AnimatedBuilder(
+            animation: _shakeAnimation,
+            builder: (context, child) {
+              return Transform.translate(
+                offset: Offset(_shakeAnimation.value, 0),
+                child: child,
+              );
+            },
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Icon(Icons.storefront_rounded, size: 64, color: Color(0xff146b59)),
-                const SizedBox(height: 12),
+                const SizedBox(height: 20),
+                const Center(
+                  child: Icon(
+                    Icons.note_alt_rounded,
+                    size: 64,
+                    color: Color(0xff146b59),
+                  ),
+                ),
+                const SizedBox(height: 16),
                 const Text(
                   '첫 근무 노트',
                   textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+                  style: TextStyle(
+                    fontSize: 28,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xff146b59),
+                    letterSpacing: -0.5,
+                  ),
                 ),
-                const SizedBox(height: 6),
+                const SizedBox(height: 8),
                 const Text(
-                  'AI 실전 상황극 훈련 서비스',
+                  '알바 초보생을 위한 AI 맞춤 상황극 훈련 서비스',
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.grey, fontSize: 14),
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Colors.grey,
+                  ),
                 ),
-                const SizedBox(height: 36),
+                const SizedBox(height: 40),
 
-                // ID 입력창
+                if (errorMessage != null) ...[
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.red.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.red.shade200),
+                    ),
+                    child: Text(
+                      errorMessage!,
+                      style: TextStyle(color: Colors.red.shade800, fontSize: 13),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                ],
+
                 TextField(
                   controller: idController,
                   decoration: const InputDecoration(
-                    labelText: '아이디',
-                    hintText: '아이디를 입력하세요',
+                    labelText: '아이디 (이메일)',
                     prefixIcon: Icon(Icons.person_outline),
                     border: OutlineInputBorder(),
                   ),
+                  keyboardType: TextInputType.emailAddress,
+                  textInputAction: TextInputAction.next,
                 ),
-                const SizedBox(height: 14),
+                const SizedBox(height: 16),
 
-                // 보안 비밀번호 입력창 (보안 입력 & 가시성 토글 아이콘)
                 TextField(
                   controller: passwordController,
                   obscureText: _obscurePassword,
                   decoration: InputDecoration(
                     labelText: '비밀번호',
-                    hintText: '비밀번호를 입력하세요',
                     prefixIcon: const Icon(Icons.lock_outline),
                     suffixIcon: IconButton(
                       icon: Icon(
-                        _obscurePassword ? Icons.visibility_off_outlined : Icons.visibility_outlined,
-                        color: Colors.grey,
+                        _obscurePassword ? Icons.visibility_off : Icons.visibility,
                       ),
                       onPressed: () {
                         setState(() {
@@ -293,112 +412,99 @@ class _LoginViewState extends ConsumerState<LoginView> with SingleTickerProvider
                     ),
                     border: const OutlineInputBorder(),
                   ),
+                  textInputAction: TextInputAction.done,
                   onSubmitted: (_) => _performLogin(idController.text, passwordController.text),
                 ),
-
-                // 실패 시 흔들리는 오류 알림 카드
-                if (errorMessage != null) ...[
-                  const SizedBox(height: 14),
-                  AnimatedBuilder(
-                    animation: _shakeAnimation,
-                    builder: (context, child) {
-                      return Transform.translate(
-                        offset: Offset(_shakeAnimation.value, 0),
-                        child: child,
-                      );
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                      decoration: BoxDecoration(
-                        color: Colors.red.shade50,
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: Colors.red.shade200),
-                      ),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.error_outline_rounded, color: Colors.red, size: 20),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              errorMessage!,
-                              style: const TextStyle(color: Colors.red, fontSize: 13, fontWeight: FontWeight.bold),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-
                 const SizedBox(height: 24),
 
-                // 로그인 버튼
                 ElevatedButton(
                   onPressed: () => _performLogin(idController.text, passwordController.text),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xff146b59),
                     foregroundColor: Colors.white,
-                    minimumSize: const Size(double.infinity, 52),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    elevation: 2,
                   ),
-                  child: const Text('로그인', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
-                ),
-
-                const SizedBox(height: 12),
-
-                // 회원가입 페이지 이동 버튼
-                TextButton(
-                  onPressed: () async {
-                    final registeredId = await Navigator.push<String>(
-                      context,
-                      MaterialPageRoute(builder: (_) => const RegisterView()),
-                    );
-                    if (registeredId != null && registeredId.isNotEmpty) {
-                      idController.text = registeredId;
-                    }
-                  },
-                  child: const Text('아직 계정이 없으신가요? 회원가입하기'),
-                ),
-
-                const SizedBox(height: 8),
-
-                // 서버 연결 설정 다이얼로그 버튼
-                TextButton.icon(
-                  onPressed: _showServerConfigDialog,
-                  icon: const Icon(Icons.settings_ethernet, size: 18),
-                  label: const Text('서버 연결 주소 설정 및 테스트', style: TextStyle(fontSize: 13, color: Colors.grey)),
-                ),
-
-                const SizedBox(height: 16),
-                const Divider(),
-                const SizedBox(height: 16),
-
-                const Text(
-                  '빠른 테스트 계정 로그인',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.grey),
+                  child: const Text(
+                    '로그인',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
                 ),
                 const SizedBox(height: 12),
 
-                // 원클릭 테스트 로그인 버튼
+                // 🚀 테스트 전용 빠른 로그인 버튼 (수습생 유저 / 점주 관리자)
                 Row(
                   children: [
                     Expanded(
                       child: OutlinedButton.icon(
-                        onPressed: () => _performLogin('user', 'user123'),
-                        icon: const Icon(Icons.badge_outlined, size: 18),
-                        label: const Text('일반 유저'),
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          side: const BorderSide(color: Color(0xff146b59)),
+                        ),
+                        onPressed: () {
+                          idController.text = 'user';
+                          passwordController.text = 'user123';
+                          _performLogin('user', 'user123');
+                        },
+                        icon: const Icon(Icons.person_outline, size: 18, color: Color(0xff146b59)),
+                        label: const Text('유저 테스트 로그인', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xff146b59))),
                       ),
                     ),
-                    const SizedBox(width: 12),
+                    const SizedBox(width: 8),
                     Expanded(
                       child: OutlinedButton.icon(
-                        onPressed: () => _performLogin('admin', 'admin123'),
-                        icon: const Icon(Icons.admin_panel_settings_outlined, size: 18),
-                        label: const Text('관리자'),
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          side: const BorderSide(color: Color(0xff146b59)),
+                        ),
+                        onPressed: () {
+                          idController.text = 'admin';
+                          passwordController.text = 'admin123';
+                          _performLogin('admin', 'admin123');
+                        },
+                        icon: const Icon(Icons.admin_panel_settings_outlined, size: 18, color: Color(0xff146b59)),
+                        label: const Text('점주 테스트 로그인', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xff146b59))),
                       ),
                     ),
                   ],
+                ),
+                const SizedBox(height: 16),
+
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Text('계정이 없으신가요?'),
+                    TextButton(
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (_) => const RegisterView()),
+                        );
+                      },
+                      child: const Text(
+                        '회원가입',
+                        style: TextStyle(
+                          color: Color(0xff146b59),
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+
+                Center(
+                  child: TextButton.icon(
+                    onPressed: _showServerConfigDialog,
+                    icon: const Icon(Icons.settings_ethernet, size: 16, color: Colors.grey),
+                    label: const Text(
+                      '백엔드 서버 IP 주소 설정',
+                      style: TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                  ),
                 ),
               ],
             ),

@@ -80,12 +80,12 @@ class SessionSetupView extends ConsumerWidget {
                     ],
                   ),
                   const Divider(height: 20),
-                  const Text('필수 대응 항목 (최고 점수 달성 요건)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.green)),
+                  const Text('필수 대응 항목', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.green)),
                   const SizedBox(height: 4),
                   Text(mandatory, style: const TextStyle(fontSize: 14, height: 1.4)),
                   if (optional.isNotEmpty) ...[
                     const SizedBox(height: 12),
-                    const Text('선택 대응 항목 (피드백 참조용)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.orange)),
+                    const Text('선택 대응 항목', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.orange)),
                     const SizedBox(height: 4),
                     Text(optional, style: const TextStyle(fontSize: 14, height: 1.4, color: Colors.black87)),
                   ]

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:async';
+import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
@@ -28,11 +29,11 @@ class RegisterResult {
   RegisterResult({required this.success, this.errorMessage});
 }
 
-class AuthService extends ChangeNotifier {
+class AuthService extends ChangeNotifier with WidgetsBindingObserver {
   UserModel? currentUser;
   String? accessToken;
 
-  Timer? _healthTimer;
+  Timer? _heartbeatTimer;
 
   String? _customBaseUrl;
   static const String _tokenKey = 'jwt_access_token';
@@ -41,6 +42,80 @@ class AuthService extends ChangeNotifier {
   
   // 기기 식별을 위한 고유 Device ID 캐시
   String? _deviceId;
+
+  AuthService() {
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    stopHeartbeatCheck();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  // 💡 백그라운드 복귀 감지 시 세션 정황 1회 즉시 검증
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && currentUser != null && accessToken != null) {
+      Future.delayed(const Duration(milliseconds: 1200), () {
+        if (currentUser != null && accessToken != null) {
+          _checkHeartbeat();
+        }
+      });
+    }
+  }
+
+  // 🔴 경량 기기 세션 헬스체크 (1초 주기로 빠른 수신 -> 기존 기기 1초 만에 즉시 알림 팝업 수신 보장)
+  void startHeartbeatCheck() {
+    stopHeartbeatCheck();
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
+      if (currentUser == null || accessToken == null) {
+        stopHeartbeatCheck();
+        return;
+      }
+      await _checkHeartbeat();
+    });
+  }
+
+  void stopHeartbeatCheck() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+  }
+
+  // 💡 경량 하트비트: 데이터 패치 없이 세션 무효화(409) / 토큰 만료(401)만 체킹
+  Future<void> _checkHeartbeat() async {
+    if (currentUser == null || accessToken == null) return;
+    try {
+      final deviceId = await getDeviceId();
+      final response = await http.get(
+        Uri.parse('$baseUrl/users/me?device_id=$deviceId'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $accessToken',
+        },
+      ).timeout(const Duration(seconds: 3));
+
+      if (response.statusCode == 200) {
+        final userData = jsonDecode(utf8.decode(response.bodyBytes));
+        currentUser = UserModel.fromJson(userData);
+        notifyListeners();
+      } else if (response.statusCode == 409 && currentUser != null) {
+        // 🔒 다른 기기에서 중복 로그인 감지 시 기존 기기 세션 즉시 해제! (isSessionRevoked 플래그 true 전달)
+        stopHeartbeatCheck();
+        ServerConnectionHandler.handleDisconnection('다른 기기에서 동일한 계정으로 새로 로그인되었습니다.\n현재 기기에서의 접속이 해제됩니다.', true);
+      } else if (response.statusCode == 401 && currentUser != null) {
+        stopHeartbeatCheck();
+        ServerConnectionHandler.handleDisconnection('인증 세션이 만료되었습니다.\n다시 로그인해 주세요.', true);
+      }
+    } catch (e) {
+      // 소켓 연결 지연이나 일시적 네트워크 예외 시 무음 처리 (가짜 연결 끊김 팝업 방지)
+      debugPrint('하트비트 통신 예외 무음 처리: $e');
+    }
+  }
+
+  // 기존 startHealthCheck/stopHealthCheck 인터페이스 호환 보장
+  void startHealthCheck([DataService? dataService]) => startHeartbeatCheck();
 
   Future<void> initServerUrl() async {
     final prefs = await SharedPreferences.getInstance();
@@ -85,30 +160,6 @@ class AuthService extends ChangeNotifier {
     notifyListeners();
   }
 
-  // 🔴 백엔드 서버 주기적 상태 헬스체크 (10초 주기로 자동 감지)
-  void startHealthCheck() {
-    stopHealthCheck();
-    _healthTimer = Timer.periodic(const Duration(seconds: 10), (_) async {
-      if (currentUser == null || accessToken == null) {
-        stopHealthCheck();
-        return;
-      }
-      final isAlive = await checkServerHealth();
-      if (!isAlive && currentUser != null) {
-        stopHealthCheck();
-        ServerConnectionHandler.handleDisconnection('백엔드 서버와의 통신이 중단되었습니다.\n서버 작동 상태를 확인 후 다시 로그인해 주세요.');
-      } else {
-        // 살아있다면 다중 기기 중복 로그인 충돌(409) 여부도 주기적으로 체크
-        await _fetchUserProfileFromBackend(accessToken!);
-      }
-    });
-  }
-
-  void stopHealthCheck() {
-    _healthTimer?.cancel();
-    _healthTimer = null;
-  }
-
   Future<bool> checkServerHealth() async {
     try {
       final response = await http.get(
@@ -120,8 +171,11 @@ class AuthService extends ChangeNotifier {
     }
   }
 
-  // 1. 자동 로그인 시도 (서버 연결 및 JWT 토큰 검증 필수)
-  Future<bool> tryAutoLogin() async {
+  // 1. 자동 로그인 시도 (단일 계정 격리 보장)
+  Future<bool> tryAutoLogin([DataService? dataService]) async {
+    stopHeartbeatCheck();
+    dataService?.clearUserData(); // 이전 계정 데이터 메모리 세척
+
     final prefs = await SharedPreferences.getInstance();
     final token = prefs.getString(_tokenKey);
 
@@ -129,20 +183,24 @@ class AuthService extends ChangeNotifier {
       accessToken = token;
       final profileSuccess = await _fetchUserProfileFromBackend(token);
       if (profileSuccess) {
-        startHealthCheck(); // 주기적 서버 헬스체크 시동
+        startHeartbeatCheck(); // 경량 세션 체킹 시동
         return true;
       }
     }
 
-    // 서버 미구동 또는 토큰 만료 시 자동 로그인 미허용
     currentUser = null;
     accessToken = null;
     return false;
   }
 
-  // 2. 로그인 (FastAPI 서버 통신, Device ID 포함)
-  Future<LoginResult> login(String id, String password) async {
+  // 2. 로그인 (한 기기 당 한 계정 작동 단일 세션 보장)
+  Future<LoginResult> login(String id, String password, {bool force = false, DataService? dataService}) async {
     try {
+      stopHeartbeatCheck();
+      currentUser = null;
+      accessToken = null;
+      dataService?.clearUserData(); // 💡 유저 전환 시 이전 유저 데이터 전체 메모리 소멸
+
       final deviceId = await getDeviceId();
       
       final response = await http.post(
@@ -152,6 +210,7 @@ class AuthService extends ChangeNotifier {
           'email': id,
           'password': password,
           'device_id': deviceId,
+          'force': force,
         }),
       ).timeout(const Duration(seconds: 5));
 
@@ -166,7 +225,7 @@ class AuthService extends ChangeNotifier {
         // 유저 프로필 정보 수신
         final profileSuccess = await _fetchUserProfileFromBackend(accessToken!);
         if (profileSuccess) {
-          startHealthCheck(); // 주기적 서버 헬스체크 시동
+          startHeartbeatCheck(); // 경량 세션 체킹 시동
           return LoginResult(success: true);
         } else {
           return LoginResult(
@@ -174,6 +233,47 @@ class AuthService extends ChangeNotifier {
             errorMessage: '유저 프로필 정보를 불러올 수 없습니다.',
           );
         }
+      } else if (response.statusCode == 202) {
+        // 💡 기존 기기에 해제 알림 신호 전송 완료 -> 기존 기기 1초 헬스체크에서 알림을 수신 및 세션 해제할 때까지 최대 10초간 1초 간격 재시도
+        for (int retry = 0; retry < 10; retry++) {
+          await Future.delayed(const Duration(seconds: 1));
+          final retryRes = await http.post(
+            Uri.parse('$baseUrl/auth/login'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'email': id,
+              'password': password,
+              'device_id': deviceId,
+              'force': true,
+            }),
+          ).timeout(const Duration(seconds: 4));
+
+          if (retryRes.statusCode == 200) {
+            final data = jsonDecode(utf8.decode(retryRes.bodyBytes));
+            accessToken = data['access_token'];
+            
+            final prefs = await SharedPreferences.getInstance();
+            await prefs.setString(_tokenKey, accessToken!);
+            await prefs.setString(_savedUserKey, id);
+
+            final profileSuccess = await _fetchUserProfileFromBackend(accessToken!);
+            if (profileSuccess) {
+              startHeartbeatCheck(); // 경량 세션 체킹 시동
+              return LoginResult(success: true);
+            }
+          }
+        }
+        return LoginResult(
+          success: false,
+          errorMessage: '기존 기기에서의 로그아웃 수신 처리가 지연되고 있습니다. 다시 시도해 주세요.',
+        );
+      } else if (response.statusCode == 409) {
+        final data = jsonDecode(utf8.decode(response.bodyBytes));
+        return LoginResult(
+          success: false,
+          isConflict: true,
+          errorMessage: data['detail'] ?? '다른 기기에서 이미 로그인되어 있습니다.',
+        );
       } else if (response.statusCode == 401) {
         return LoginResult(
           success: false,
@@ -260,20 +360,14 @@ class AuthService extends ChangeNotifier {
         notifyListeners();
         return true;
       } else if (response.statusCode == 409 && currentUser != null) {
-        // 다중 기기 중복 로그인 감지 처리
-        stopHealthCheck();
-        ServerConnectionHandler.handleDisconnection('다른 기기에서 동일한 유저로 로그인이 감지되었습니다.\n현재 기기에서는 로그아웃되며, 다시 이용하시려면 로그인해 주세요.');
+        stopHeartbeatCheck();
+        ServerConnectionHandler.handleDisconnection('다른 기기에서 동일한 계정으로 새로 로그인되었습니다.\n현재 기기에서의 접속이 해제됩니다.');
       } else if (response.statusCode == 401 && currentUser != null) {
-        // 인증 만료 및 서버 연결 끊김 처리
-        stopHealthCheck();
+        stopHeartbeatCheck();
         ServerConnectionHandler.handleDisconnection('인증 세션이 만료되었습니다.\n다시 로그인해 주세요.');
       }
     } catch (e) {
       debugPrint('FastAPI 프로필 정보 수신 실패: $e');
-      if (currentUser != null) {
-        stopHealthCheck();
-        ServerConnectionHandler.handleDisconnection();
-      }
     }
     return false;
   }
@@ -300,15 +394,11 @@ class AuthService extends ChangeNotifier {
         final List<dynamic> usersJson = jsonDecode(utf8.decode(response.bodyBytes));
         return usersJson.map((j) => UserModel.fromJson(j)).toList();
       } else if (response.statusCode == 401 && currentUser != null) {
-        stopHealthCheck();
+        stopHeartbeatCheck();
         ServerConnectionHandler.handleDisconnection('관리자 인증 세션이 만료되었습니다.\n다시 로그인해 주세요.');
       }
     } catch (e) {
       debugPrint('관리자 전체 유저 조회 실패: $e');
-      if (currentUser != null) {
-        stopHealthCheck();
-        ServerConnectionHandler.handleDisconnection();
-      }
     }
     return [];
   }
@@ -329,15 +419,11 @@ class AuthService extends ChangeNotifier {
         final List<dynamic> reportsJson = jsonDecode(utf8.decode(response.bodyBytes));
         return reportsJson.map((j) => PracticeReport.fromJson(j)).toList();
       } else if (response.statusCode == 401 && currentUser != null) {
-        stopHealthCheck();
+        stopHeartbeatCheck();
         ServerConnectionHandler.handleDisconnection('관리자 인증 세션이 만료되었습니다.\n다시 로그인해 주세요.');
       }
     } catch (e) {
       debugPrint('관리자 유저 리포트 조회 실패: $e');
-      if (currentUser != null) {
-        stopHealthCheck();
-        ServerConnectionHandler.handleDisconnection();
-      }
     }
     return [];
   }
@@ -360,10 +446,6 @@ class AuthService extends ChangeNotifier {
       }
     } catch (e) {
       debugPrint('관리자 유저 삭제 실패: $e');
-      if (currentUser != null) {
-        stopHealthCheck();
-        ServerConnectionHandler.handleDisconnection();
-      }
     }
     return false;
   }
@@ -389,17 +471,29 @@ class AuthService extends ChangeNotifier {
       }
     } catch (e) {
       debugPrint('관리자 리포트 코멘트 등록 실패: $e');
-      if (currentUser != null) {
-        stopHealthCheck();
-        ServerConnectionHandler.handleDisconnection();
-      }
     }
     return false;
   }
 
-  // 9. 로그아웃 (이전 로그인 유저의 리포트 상태 및 헬스체크 타이머 초기화)
-  void logout([DataService? dataService]) async {
-    stopHealthCheck(); // 헬스체크 타이머 중단
+  // 9. 로그아웃 (서버 기기 세션 해제 및 상태 초기화)
+  Future<void> logout([DataService? dataService]) async {
+    stopHeartbeatCheck();
+
+    // 백엔드 서버에 로그아웃 통보하여 DB 상의 current_device_id 세션 해제
+    if (accessToken != null && accessToken!.isNotEmpty) {
+      try {
+        await http.post(
+          Uri.parse('$baseUrl/auth/logout'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $accessToken',
+          },
+        ).timeout(const Duration(seconds: 3));
+      } catch (e) {
+        debugPrint('서버 로그아웃 통신 실패: $e');
+      }
+    }
+
     currentUser = null;
     accessToken = null;
     dataService?.clearUserData(); // 메모리 내 유저별 리포트 데이터 삭제

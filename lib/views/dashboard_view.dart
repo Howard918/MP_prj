@@ -12,8 +12,10 @@ import 'case_form_view.dart';
 import 'login_view.dart';
 import 'report_detail_view.dart';
 import 'rules_view.dart';
+import 'store_rules_view.dart';
 import 'scenario_form_view.dart';
 import 'session_setup_view.dart';
+import 'rag_search_view.dart';
 
 class Dashboard extends ConsumerStatefulWidget {
   const Dashboard({super.key});
@@ -23,13 +25,18 @@ class Dashboard extends ConsumerStatefulWidget {
 
 class _DashboardState extends ConsumerState<Dashboard> {
   int tab = 0;
+  int _previousTab = 0; // 방향성 탭 전환 애니메이션용 이전 탭 인덱스 추적
   int adminSubTab = 0; // 0: 시나리오 관리, 1: 사례 검토 및 변환, 2: 유저 회원 관리
   String selectedIndustry = '전체';
   String selectedReportIndustry = '전체';
 
   List<UserModel> adminUsers = [];
   bool isLoadingAdminUsers = false;
-  bool _isRefreshing = false; // 새로고침 중 상호작용 차단 및 로딩 모달 상태
+  bool _isRefreshing = false; // 상호작용 제어용 플래그
+  int _refreshKeyCounter = 0; // 새로고침 시 화면 리프레시 애니메이션 트리거 카운터
+
+  final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocusNode = FocusNode();
 
   @override
   void initState() {
@@ -42,6 +49,7 @@ class _DashboardState extends ConsumerState<Dashboard> {
       await dataService.loadData(baseUrl: authService.baseUrl);
 
       if (authService.currentUser != null) {
+        authService.startHeartbeatCheck(); // 💡 1초 경량 하트비트 시동 (새 기기 로그인 시 1초 만에 알림 수신 보장)
         await dataService.syncUserNotifications(
           authService.currentUser!.id,
           isAdmin: authService.isAdmin,
@@ -80,12 +88,20 @@ class _DashboardState extends ConsumerState<Dashboard> {
 
   void selectTab(int index) {
     if (_isRefreshing) return; // 새로고침 진행 중에는 탭 이동 차단
-
-    setState(() {
-      tab = index;
-    });
+    if (tab == index) return;
 
     final dataService = ref.read(dataServiceProvider);
+
+    if (index == 0) {
+      // 💡 수동 홈 탭 이동 시에만 추천 상황극 신규 교체
+      dataService.updateRecommendedScenario(forceReshuffle: true);
+    }
+
+    setState(() {
+      _previousTab = tab;
+      tab = index;
+      _refreshKeyCounter++; // 💡 탭 전환 시마다 고유 세션 키를 생성하여 새 탭의 모든 위젯 애니메이션 재발동
+    });
 
     if (index == 4) {
       // 관리자 탭 클릭 시
@@ -96,33 +112,50 @@ class _DashboardState extends ConsumerState<Dashboard> {
     }
   }
 
-  void _logout() {
+  Future<void> _performLogout() async {
     if (_isRefreshing) return;
-    showDialog<void>(
+
+    final dataService = ref.read(dataServiceProvider);
+    final authService = ref.read(authServiceProvider);
+
+    // 1. 서버 상의 기기 세션 해제 및 토큰 삭제 비동기 수행 완료까지 대기
+    await authService.logout(dataService);
+
+    if (!mounted) return;
+
+    // 2. 토큰 및 세션 삭제가 완전히 끝난 후 LoginView(skipAutoLogin: true)로 이동하여 1번에 즉시 로그아웃 처리
+    Navigator.pushAndRemoveUntil(
+      context,
+      MaterialPageRoute(builder: (_) => const LoginView(skipAutoLogin: true)),
+      (route) => false,
+    );
+  }
+
+  void _logout() async {
+    if (_isRefreshing) return;
+
+    final shouldLogout = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('로그아웃'),
         content: const Text('로그아웃 하시겠습니까?'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx),
+            onPressed: () => Navigator.pop(ctx, false),
             child: const Text('취소'),
           ),
           FilledButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              final dataService = ref.read(dataServiceProvider);
-              ref.read(authServiceProvider).logout(dataService);
-              Navigator.pushReplacement(
-                context,
-                MaterialPageRoute(builder: (_) => const LoginView()),
-              );
-            },
+            style: FilledButton.styleFrom(backgroundColor: const Color(0xff146b59)),
+            onPressed: () => Navigator.pop(ctx, true),
             child: const Text('로그아웃'),
-          )
+          ),
         ],
       ),
     );
+
+    if (shouldLogout == true && mounted) {
+      await _performLogout();
+    }
   }
 
   // 🔴 통일된 빨간 닷 알림뱃지 아이콘 위젯 (하단 네비게이션 바 & 상단 서브 탭 공통)
@@ -200,13 +233,17 @@ class _DashboardState extends ConsumerState<Dashboard> {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     _buildNavIcon(icon, showBadge),
-                    const SizedBox(width: 6),
-                    Text(
-                      label,
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
-                        color: isSelected ? const Color(0xff146b59) : Colors.grey.shade700,
+                    const SizedBox(width: 4),
+                    Flexible(
+                      child: Text(
+                        label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+                          color: isSelected ? const Color(0xff146b59) : Colors.grey.shade700,
+                        ),
                       ),
                     ),
                   ],
@@ -216,6 +253,152 @@ class _DashboardState extends ConsumerState<Dashboard> {
           );
         }).toList(),
       ),
+    );
+  }
+
+  void _performSearch(String query) {
+    if (query.trim().isEmpty) return;
+    FocusScope.of(context).unfocus();
+    _searchController.clear();
+
+    final authService = ref.read(authServiceProvider);
+    // 🌟 신규 검색: 이전 기록을 섞지 않고 완전히 새 화면으로 시작
+    ref.read(ragChatViewModelProvider).startNewSearch(
+      query, 
+      authService.baseUrl, 
+      authService.accessToken,
+    );
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => const RagChatBottomSheet(),
+    );
+  }
+
+  Widget _buildSearchFABWrapper(bool showSearchBar) {
+    return AnimatedSlide(
+      offset: showSearchBar ? Offset.zero : const Offset(0.0, 2.5), // 💡 위로 나타남(0.0) / 아래로 슬라이드 숨김(2.5)
+      duration: const Duration(milliseconds: 320),
+      curve: Curves.easeInOutCubic,
+      child: AnimatedOpacity(
+        opacity: showSearchBar ? 1.0 : 0.0,
+        duration: const Duration(milliseconds: 250),
+        child: IgnorePointer(
+          ignoring: !showSearchBar, // 숨김 상태 시 터치 이벤트 차단
+          child: _buildSearchFAB(),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSearchFAB() {
+    final ragViewModel = ref.watch(ragChatViewModelProvider);
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        // 📋 직전 검색 결과 확인 버튼 (이전 검색 기록이 있는 경우에만 표시)
+        if (ragViewModel.hasPreviousResult) ...[
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6.0, right: 4.0),
+            child: ActionChip(
+              avatar: const Icon(Icons.history_rounded, size: 16, color: Color(0xff146b59)),
+              label: const Text('직전 검색 결과 보기', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xff146b59))),
+              backgroundColor: Colors.white,
+              side: BorderSide(color: const Color(0xff146b59).withValues(alpha: 0.35), width: 1.2),
+              elevation: 3,
+              shadowColor: Colors.black26,
+              onPressed: () {
+                ragViewModel.restorePreviousSearch();
+                showModalBottomSheet(
+                  context: context,
+                  isScrollControlled: true,
+                  backgroundColor: Colors.transparent,
+                  builder: (ctx) => const RagChatBottomSheet(),
+                );
+              },
+            ),
+          ),
+        ],
+
+        // 메인 상시 1줄 검색 입력창
+        Container(
+          width: MediaQuery.of(context).size.width - 32, // 화면 가로폭에 맞춘 세련된 카드 형태
+          margin: const EdgeInsets.only(bottom: 4),
+          constraints: const BoxConstraints(
+            minHeight: 46, // 폰트 배율이 커도 1줄 상태로 슬림하게 유지
+            maxHeight: 110, // 사용자가 긴 글 입력 시 자동 세로 확장
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          decoration: BoxDecoration(
+            color: Colors.white, // 깔끔한 화이트 메인 카드 배경
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(
+              color: const Color(0xff146b59).withValues(alpha: 0.35),
+              width: 1.5,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.08),
+                blurRadius: 10,
+                offset: const Offset(0, 3),
+              ),
+            ],
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              const Padding(
+                padding: EdgeInsets.only(left: 2, right: 6),
+                child: Icon(Icons.auto_awesome_rounded, color: Color(0xff146b59), size: 20),
+              ),
+              Expanded(
+                child: TextField(
+                  controller: _searchController,
+                  focusNode: _searchFocusNode,
+                  minLines: 1, // 한 줄로 깔끔하게 시작
+                  maxLines: null, // 내용 초과 시 유연하게 자동 세로 확장
+                  keyboardType: TextInputType.multiline,
+                  style: const TextStyle(color: Colors.black87, fontSize: 13.5, height: 1.3),
+                  cursorColor: const Color(0xff146b59),
+                  decoration: InputDecoration(
+                    hintText: '매장 운영규칙 질문하기...', // 화면 배율이 커도 1줄을 유지하는 간결한 힌트 문구
+                    hintStyle: TextStyle(color: Colors.grey.shade500, fontSize: 13),
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
+                    isDense: true,
+                    contentPadding: const EdgeInsets.symmetric(vertical: 6),
+                  ),
+                  onChanged: (val) {
+                    // 엔터키 입력 시 즉시 전송
+                    if (val.endsWith('\n')) {
+                      _searchController.text = val.substring(0, val.length - 1);
+                      _performSearch(_searchController.text);
+                    }
+                  },
+                ),
+              ),
+              const SizedBox(width: 4),
+              Material(
+                color: const Color(0xff146b59),
+                shape: const CircleBorder(),
+                child: InkWell(
+                  customBorder: const CircleBorder(),
+                  onTap: () => _performSearch(_searchController.text),
+                  child: const Padding(
+                    padding: EdgeInsets.all(6.0),
+                    child: Icon(Icons.arrow_upward_rounded, color: Colors.white, size: 18),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
@@ -383,9 +566,10 @@ class _DashboardState extends ConsumerState<Dashboard> {
       // 2번 탭: 교육 리포트 대시보드
       _buildReportDashboard(dataService),
 
-      // 3번 탭: 매장 운영규칙
+      // 3번 탭: 매장 운영규칙 및 법령
       [
-        panel('매장 운영규칙', '상황극에 연결할 규칙 예시를 확인하세요.', Icons.menu_book, () => open(const RulesPage())),
+        panel('매장 운영규칙', '업종별 자체 매장 규칙과 매뉴얼을 확인하세요.', Icons.storefront_outlined, () => open(const StoreRulesView())),
+        panel('관련 법령 및 지침', '상황극에 연결될 수 있는 관련 법령 정보를 확인하세요.', Icons.gavel_outlined, () => open(const RulesPage())),
         panel('현장 사례 등록', '실제 매장에서 일어난 응대 사례를 등록합니다.', Icons.note_add, () => open(const CaseForm())),
       ],
 
@@ -445,6 +629,9 @@ class _DashboardState extends ConsumerState<Dashboard> {
 
     final activePages = isAdmin ? allPages : allPages.sublist(0, 4);
 
+    final bool isMovingRight = tab > _previousTab;
+    final bool isMovingLeft = tab < _previousTab;
+
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, result) async {
@@ -452,31 +639,79 @@ class _DashboardState extends ConsumerState<Dashboard> {
 
         if (tab != 0) {
           // 홈 탭이 아닌 다른 탭에 있을 경우 홈 탭(0번)으로 이동
+          dataService.updateRecommendedScenario(forceReshuffle: true);
           setState(() {
+            _previousTab = tab;
             tab = 0;
+            _refreshKeyCounter++; // 💡 홈 탭 복귀 시 고유 세션 키 생성으로 위젯 애니메이션 재발동
           });
         } else {
-          // 홈 탭일 경우 앱 종료 여부 확인 팝업 표시
-          final shouldExit = await showDialog<bool>(
-            context: context,
-            builder: (ctx) => AlertDialog(
-              title: const Text('앱 종료'),
-              content: const Text('앱을 종료하시겠습니까?'),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(ctx, false),
-                  child: const Text('취소'),
-                ),
-                FilledButton(
-                  onPressed: () => Navigator.pop(ctx, true),
-                  child: const Text('종료'),
-                ),
-              ],
-            ),
-          );
+          // 홈 탭일 경우: 로그인 상태에 따라 안내 팝업 및 옵션 다르게 표출
+          final isLoggedIn = authService.isLoggedIn;
 
-          if (shouldExit == true && mounted) {
-            SystemNavigator.pop(); // 앱 종료
+          if (isLoggedIn) {
+            // 💡 로그인 상태일 때: [로그아웃], [앱 종료], [취소] 다이얼로그
+            final action = await showDialog<String>(
+              context: context,
+              builder: (ctx) => AlertDialog(
+                title: const Row(
+                  children: [
+                    Icon(Icons.exit_to_app_rounded, color: Color(0xff146b59)),
+                    SizedBox(width: 8),
+                    Text('종료 및 로그아웃', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                  ],
+                ),
+                content: Text(
+                  '[${authService.currentUser?.name ?? "사용자"}] 님, 로그아웃 하시겠습니까 아니면 앱을 종료하시겠습니까?',
+                  style: const TextStyle(fontSize: 14, height: 1.4),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx, 'cancel'),
+                    child: const Text('취소'),
+                  ),
+                  OutlinedButton(
+                    onPressed: () => Navigator.pop(ctx, 'logout'),
+                    child: const Text('로그아웃'),
+                  ),
+                  FilledButton(
+                    style: FilledButton.styleFrom(backgroundColor: const Color(0xff146b59)),
+                    onPressed: () => Navigator.pop(ctx, 'exit'),
+                    child: const Text('앱 종료'),
+                  ),
+                ],
+              ),
+            );
+
+            if (action == 'logout' && mounted) {
+              await _performLogout();
+            } else if (action == 'exit' && mounted) {
+              SystemNavigator.pop(); // 앱 종료
+            }
+          } else {
+            // 💡 미로그인/로그인 전 상태일 때: [앱 종료], [취소] 옵션만 표시
+            final shouldExit = await showDialog<bool>(
+              context: context,
+              builder: (ctx) => AlertDialog(
+                title: const Text('앱 종료'),
+                content: const Text('앱을 종료하시겠습니까?'),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx, false),
+                    child: const Text('취소'),
+                  ),
+                  FilledButton(
+                    style: FilledButton.styleFrom(backgroundColor: const Color(0xff146b59)),
+                    onPressed: () => Navigator.pop(ctx, true),
+                    child: const Text('종료'),
+                  ),
+                ],
+              ),
+            );
+
+            if (shouldExit == true && mounted) {
+              SystemNavigator.pop(); // 앱 종료
+            }
           }
         }
       },
@@ -503,19 +738,62 @@ class _DashboardState extends ConsumerState<Dashboard> {
             ),
           ],
         ),
-        body: Stack(
-          children: [
-            content(
-              activePages[tab],
-              onRefresh: () async {
-                if (_isRefreshing) return;
-                setState(() {
-                  _isRefreshing = true;
-                });
+        body: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 300),
+          switchInCurve: Curves.easeOutCubic,
+          switchOutCurve: Curves.easeInCubic,
+          layoutBuilder: (Widget? currentChild, List<Widget> previousChildren) {
+            return Stack(
+              alignment: Alignment.topCenter,
+              children: <Widget>[
+                ...previousChildren,
+                if (currentChild != null) currentChild,
+              ],
+            );
+          },
+          transitionBuilder: (Widget child, Animation<double> animation) {
+            final isIncoming = child.key == ValueKey('tab_${tab}_refresh_${_refreshKeyCounter}');
 
+            if (!isIncoming) {
+              // 💡 탭 이동 직후 이전 화면 위젯은 즉시 깨끗한 빈 화면(솔리드 배경)으로 세척
+              return Container(
+                color: const Color(0xfff4f7f5),
+              );
+            }
+
+            // 💡 새로 생기는(등장하는) 화면만 깨끗한 빈 배경 위로 슬라이드 진입
+            Offset inBeginOffset = Offset.zero;
+
+            if (isMovingRight) {
+              // 오른쪽 탭으로 이동 시: 새 탭이 우측(1.0)에서 좌측(0.0)으로 슬라이드 진입
+              inBeginOffset = const Offset(1.0, 0.0);
+            } else if (isMovingLeft) {
+              // 왼쪽 탭으로 이동 시: 새 탭이 좌측(-1.0)에서 우측(0.0)으로 슬라이드 진입
+              inBeginOffset = const Offset(-1.0, 0.0);
+            }
+
+            final offsetAnimation = Tween<Offset>(
+              begin: inBeginOffset,
+              end: Offset.zero,
+            ).animate(animation);
+
+            return SlideTransition(
+              position: offsetAnimation,
+              child: Material(
+                color: const Color(0xfff4f7f5),
+                child: child,
+              ),
+            );
+          },
+          child: KeyedSubtree(
+            key: ValueKey('tab_${tab}_refresh_${_refreshKeyCounter}'),
+            child: content(
+              activePages[tab],
+              refreshKey: _refreshKeyCounter, // 💡 새로고침 시 상단부터 순차대로 좌->우 위젯 연출 전달
+              onRefresh: () async {
                 try {
                   final authService = ref.read(authServiceProvider);
-                  await authService.reloadUserProfile(); // 🔥 사용자 최신 통계(평균 점수, 훈련 횟수 등) 업데이트 연동
+                  await authService.reloadUserProfile();
                   await ref.read(dataServiceProvider).refreshData(
                     token: authService.accessToken,
                     baseUrl: authService.baseUrl,
@@ -523,46 +801,18 @@ class _DashboardState extends ConsumerState<Dashboard> {
                   if (authService.isAdmin) {
                     await _loadAdminUsers();
                   }
-                } finally {
                   if (mounted) {
                     setState(() {
-                      _isRefreshing = false;
+                      _previousTab = tab;
+                      _refreshKeyCounter++; // 🔥 새로고침 완료 시 즉시 흰색 세척 후 스태거드 순차 애니메이션 발동
                     });
                   }
+                } catch (e) {
+                  debugPrint('새로고침 수행 중 오류: $e');
                 }
               },
             ),
-            // 새로고침 진행 중 유저 상호작용 완전 차단 모달 베리어
-            if (_isRefreshing)
-              ModalBarrier(
-                dismissible: false,
-                color: Colors.black.withValues(alpha: 0.15),
-              ),
-            if (_isRefreshing)
-              const Center(
-                child: Card(
-                  elevation: 4,
-                  child: Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 22, vertical: 16),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2.5),
-                        ),
-                        SizedBox(width: 12),
-                        Text(
-                          '데이터 동기화 중...',
-                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-          ],
+          ),
         ),
         bottomNavigationBar: NavigationBar(
           selectedIndex: tab,
@@ -585,6 +835,8 @@ class _DashboardState extends ConsumerState<Dashboard> {
               ),
           ],
         ),
+        floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
+        floatingActionButton: _buildSearchFABWrapper(tab != 4),
       ),
     );
   }
@@ -1046,7 +1298,14 @@ class _DashboardState extends ConsumerState<Dashboard> {
       Text('교육 리포트 대시보드', style: Theme.of(context).textTheme.headlineSmall),
       const SizedBox(height: 6),
       const Text('상황극별 연습 히스토리와 회차별 성과 변화를 비교할 수 있습니다.'),
-      const SizedBox(height: 16),
+      const SizedBox(height: 14),
+
+      // 📈 전체 회차별 점수 변화 가시적 그래프
+      if (dataService.practiceReports.isNotEmpty) ...[
+        ScoreTrendChart(reports: dataService.practiceReports),
+        const SizedBox(height: 16),
+      ],
+
       Wrap(
         spacing: 8,
         runSpacing: 4,

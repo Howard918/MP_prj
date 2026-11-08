@@ -10,16 +10,17 @@ from ..security import get_current_user
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
-# 다중 기기 로그인 중복 체크 종속성 함수 (하위 호환성을 위해 device_id를 선택적으로 허용)
+# 다중 기기 로그인 중복 체크 종속성 함수
 def get_current_active_device_user(
     device_id: Optional[str] = None,
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ) -> User:
-    # 기기 ID가 제공되었고, DB에 저장된 최신 기기 ID와 다를 경우에만 중복 로그인 차단
+    # 기기 ID가 제공되었고, DB에 저장된 최신 기기 ID와 다를 경우 중복 로그인 차단
     if device_id and current_user.current_device_id and current_user.current_device_id != device_id:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="다른 기기에서 동일한 유저로 로그인이 감지되었습니다.\n현재 기기에서는 로그아웃되며, 계속 이용하시려면 다시 로그인해 주세요."
+            detail="다른 기기에서 동일한 계정으로 새로 로그인되었습니다.\n현재 기기에서의 접속이 해제됩니다."
         )
     return current_user
 
@@ -27,10 +28,10 @@ def get_current_active_device_user(
 @router.get("/me", response_model=UserResponse)
 def get_my_profile(
     device_id: Optional[str] = None,
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ):
-    # 명시적 의존성 주입을 통해 기기 일치 여부 검증
-    active_user = get_current_active_device_user(device_id, current_user)
+    active_user = get_current_active_device_user(device_id, current_user, db)
     return active_user
 
 # 2. [POST] /users/me/reports: 상황극 훈련 결과 저장 및 유저 통계 자동 업데이트
@@ -41,7 +42,7 @@ def create_practice_report(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    active_user = get_current_active_device_user(device_id, current_user)
+    active_user = get_current_active_device_user(device_id, current_user, db)
 
     # 1. 신규 리포트 DB 저장
     report_date = report_in.date_time if report_in.date_time else datetime.utcnow()
@@ -88,7 +89,7 @@ def get_my_reports(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    active_user = get_current_active_device_user(device_id, current_user)
+    active_user = get_current_active_device_user(device_id, current_user, db)
 
     reports = db.query(PracticeReportModel)\
         .filter(PracticeReportModel.user_id == active_user.id)\

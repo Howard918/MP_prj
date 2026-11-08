@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
@@ -16,7 +15,6 @@ final dataServiceProvider = ChangeNotifierProvider<DataService>((ref) => DataSer
 class DataService extends ChangeNotifier {
   List<RoleplayScenario> scenarioStore = [];
   List<OfficialReference> references = [];
-  Map<String, List<String>> rulesByIndustry = {};
   List<PracticeReport> practiceReports = [];
   List<FieldCase> fieldCaseStore = [];
   RoleplayScenario? currentRecommendedScenario;
@@ -316,39 +314,22 @@ class DataService extends ChangeNotifier {
   Future<void> loadData({String? baseUrl}) async {
     if (isLoaded) return;
 
-    // 1. Load Scenarios from Local Asset
-    final scenariosString = await rootBundle.loadString('assets/data/scenarios.json');
-    final List<dynamic> scenariosJson = json.decode(scenariosString);
-    scenarioStore = scenariosJson.map((json) => RoleplayScenario.fromJson(json)).toList();
-
-    // 2. Load References
-    final referencesString = await rootBundle.loadString('assets/data/references.json');
-    final List<dynamic> referencesJson = json.decode(referencesString);
-    references = referencesJson.map((json) => OfficialReference.fromJson(json)).toList();
-
-    // 3. Load Rules
-    final rulesString = await rootBundle.loadString('assets/data/rules.json');
-    final Map<String, dynamic> rulesJson = json.decode(rulesString);
-    rulesByIndustry = rulesJson.map((key, value) => MapEntry(key, List<String>.from(value)));
-
-    // 4. Field Cases (기본 샘플 제거, 빈 리스트로 시작)
-    fieldCaseStore = [];
-
-    // 5. 로컬 저장소에 저장된 변경된 시나리오 로드하여 기본 에셋 오버라이드
+    // 1. 로컬 캐시 스토리지에서 오프라인 캐시 시나리오 로드
     await _loadScenariosFromLocalPrefs();
 
     isLoaded = true;
 
-    // 6. Fetch Latest Scenarios from Backend if baseUrl is available
+    // 2. 백엔드 DB 서버로부터 실시간 시나리오 및 관련 법령/레퍼런스 데이터 수신
     if (baseUrl != null && baseUrl.isNotEmpty) {
       await _fetchScenariosInternal(baseUrl);
+      await _fetchReferencesInternal(baseUrl);
     }
 
     updateRecommendedScenario(forceReshuffle: false);
     notifyListeners();
   }
 
-  // 내부 시나리오 동기화 로직 (중복 추천 갱신 방지)
+  // 내부 시나리오 동기화 로직 (백엔드 삭제/추가/수정 내역을 Source of Truth로 100% 동기화)
   Future<void> _fetchScenariosInternal(String baseUrl) async {
     try {
       final response = await http.get(
@@ -360,21 +341,29 @@ class DataService extends ChangeNotifier {
         final List<dynamic> jsonList = json.decode(utf8.decode(response.bodyBytes));
         final serverScenarios = jsonList.map((j) => RoleplayScenario.fromJson(j)).toList();
         
-        // 💡 버그 픽스: Map 병합에서 List 기반 완전 동기화로 개편
-        // 백엔드 DB를 최신 Source of Truth로 삼아 덮어쓰되, 
-        // 아직 서버에 업로드/공개되지 않은 로컬 오프라인 초안(draft)만 보존합니다.
-        final List<RoleplayScenario> syncedScenarios = List.from(serverScenarios);
-        for (final local in scenarioStore) {
-          final exists = serverScenarios.any((s) => s.id == local.id);
-          if (!exists && !local.isPublished) {
-            syncedScenarios.add(local);
-          }
-        }
-        scenarioStore = syncedScenarios;
-        _saveScenariosToLocalPrefs(); // 서버 최신 수신본을 로컬 저장소에도 영구 동기화
+        // 💡 백엔드 DB를 최신 Source of Truth로 삼아 완전 동기화 (관리자의 시나리오 삭제/수정 즉시 전체 유저에게 반영)
+        scenarioStore = serverScenarios;
+        _saveScenariosToLocalPrefs(); // 서버 최신 수신본(삭제 포함)을 로컬 저장소에 영구 동기화
       }
     } catch (e) {
       debugPrint('백엔드 시나리오 동기화 실패 (로컬 유지): $e');
+    }
+  }
+
+  // 내부 공식 근거/법령 레퍼런스 DB 동기화 로직
+  Future<void> _fetchReferencesInternal(String baseUrl) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/scenarios/references'),
+        headers: {'Content-Type': 'application/json'},
+      ).timeout(const Duration(seconds: 5));
+
+      if (response.statusCode == 200) {
+        final List<dynamic> jsonList = json.decode(utf8.decode(response.bodyBytes));
+        references = jsonList.map((j) => OfficialReference.fromJson(j)).toList();
+      }
+    } catch (e) {
+      debugPrint('백엔드 레퍼런스 동기화 실패: $e');
     }
   }
 
@@ -385,30 +374,108 @@ class DataService extends ChangeNotifier {
     notifyListeners();
   }
 
-  void addFieldCase(FieldCase fieldCase, {String? token, String? baseUrl}) {
+  void addFieldCase(FieldCase fieldCase, {String? token, String? baseUrl}) async {
     fieldCaseStore.insert(0, fieldCase);
     // 관리자 유저들에게 현장 사례 검토 알림 발동 🔴
     triggerCaseReviewNotification(fieldCase.authorId);
     notifyListeners();
+
+    if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
+      try {
+        final response = await http.post(
+          Uri.parse('$baseUrl/cases'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $token',
+          },
+          body: jsonEncode(fieldCase.toJson()),
+        ).timeout(const Duration(seconds: 4));
+        if (response.statusCode == 201) {
+          debugPrint('백엔드 현장 사례 저장 성공!');
+        }
+      } catch (e) {
+        debugPrint('백엔드 현장 사례 저장 실패: $e');
+      }
+    }
   }
 
-  void deleteFieldCase(String caseId, {String? token, String? baseUrl}) {
+  void deleteFieldCase(String caseId, {String? token, String? baseUrl}) async {
     fieldCaseStore.removeWhere((c) => c.id == caseId);
     notifyListeners();
+
+    if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
+      try {
+        await http.delete(
+          Uri.parse('$baseUrl/cases/$caseId'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $token',
+          },
+        ).timeout(const Duration(seconds: 4));
+      } catch (e) {
+        debugPrint('백엔드 현장 사례 삭제 실패: $e');
+      }
+    }
   }
 
-  void markCaseAsConverted(String caseId, {String? token, String? baseUrl}) {
+  void markCaseAsConverted(String caseId, {String? token, String? baseUrl}) async {
     final index = fieldCaseStore.indexWhere((c) => c.id == caseId);
     if (index != -1) {
       fieldCaseStore[index].status = FieldCaseStatus.approved;
       fieldCaseStore[index].isConvertedToScenario = true;
       notifyListeners();
+
+      if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
+        try {
+          await http.put(
+            Uri.parse('$baseUrl/cases/$caseId/convert'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $token',
+            },
+          ).timeout(const Duration(seconds: 4));
+        } catch (e) {
+          debugPrint('백엔드 현장 사례 변환 마킹 실패: $e');
+        }
+      }
     }
   }
 
-  // 유저 전환/로그아웃 시 이전 유저의 훈련 리포트 상태 및 알림 초기화
+  // 내부 현장 사례 동기화 로직
+  Future<void> _fetchFieldCasesInternal(String token, String baseUrl) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/cases'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+      ).timeout(const Duration(seconds: 5));
+
+      if (response.statusCode == 200) {
+        final List<dynamic> jsonList = json.decode(utf8.decode(response.bodyBytes));
+        final serverCases = jsonList.map((j) => FieldCase.fromJson(j)).toList();
+        
+        // 백엔드 DB 기준으로 덮어쓰기 (아직 업로드 안된 로컬 데이터 보존)
+        final List<FieldCase> syncedCases = List.from(serverCases);
+        for (final local in fieldCaseStore) {
+          if (!serverCases.any((s) => s.id.trim() == local.id.trim())) {
+            syncedCases.add(local);
+          }
+        }
+        fieldCaseStore = syncedCases;
+        fieldCaseStore.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      }
+    } catch (e) {
+      debugPrint('백엔드 현장 사례 동기화 실패 (로컬 유지): $e');
+    }
+  }
+
+  // 유저 전환/로그아웃 시 이전 유저의 모든 메모리/세션 데이터를 100% 초기화하여 단일 계정 완벽 보장
   void clearUserData() {
     practiceReports.clear();
+    fieldCaseStore.clear();
+    scenarioStore.clear();
     readScenarioIds.clear();
     readReportIds.clear();
     _scenarioModTimes.clear();
@@ -418,7 +485,7 @@ class DataService extends ChangeNotifier {
     currentUserId = null;
     hasUnreadCaseReview = false;
     currentRecommendedScenario = null;
-    updateRecommendedScenario(forceReshuffle: false);
+    isLoaded = false; // 💡 신규 계정 진입 시 백엔드 DB 최신 데이터 패치 유도
     notifyListeners();
   }
 
@@ -482,32 +549,37 @@ class DataService extends ChangeNotifier {
     notifyListeners();
   }
 
-  // 당겨서 새로고침 알고리즘 (새로고침 시 단 1회만 forceReshuffle = true 로 변경 및 단일 UI 리빌드 보장)
+  // 당겨서 새로고침 알고리즘 (인위적 딜레이 제거 및 실제 네트워크 통신 소요 시간 적용)
   Future<void> refreshData({String? token, String? baseUrl}) async {
-    final minDelay = Future.delayed(const Duration(milliseconds: 600));
-
-    // 1. 비동기 패치 (중간 상태 변경 및 중간 셔플 제거)
+    // 1. 비동기 백엔드 DB 최신 패치
     if (baseUrl != null && baseUrl.isNotEmpty) {
       await _fetchScenariosInternal(baseUrl);
+      await _fetchReferencesInternal(baseUrl);
     }
     if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
       await _fetchReportsInternal(token, baseUrl);
+      await _fetchFieldCasesInternal(token, baseUrl);
     }
 
-    // 2. 단 1회만 우선순위 기반 추천 상황극 재선출 (동급 후보군 로테이션 적용)
+    // 2. 단 1회만 우선순위 기반 추천 상황극 재선출 및 UI 리빌드
     updateRecommendedScenario(forceReshuffle: true);
-
-    // 3. 최소 애니메이션 딜레이 보장 후 단 1회만 notifyListeners 호출
-    await minDelay;
     notifyListeners();
   }
 
-  // 🎯 스마트 맞춤 추천 상황극 우선순위 산출 알고리즘 (무작위 셔플 제거, 우선순위 체계 적용)
+  // 🎯 스마트 맞춤 추천 상황극 우선순위 산출 알고리즘 (수동 새로고침 / 홈 탭 이동시에만 교체)
   void updateRecommendedScenario({bool forceReshuffle = false}) {
     final published = scenarioStore.where((s) => s.isPublished).toList();
     if (published.isEmpty) {
       currentRecommendedScenario = null;
       return;
+    }
+
+    // 💡 수동 새로고침/홈 탭 전환(forceReshuffle = true)이 아니고 이미 추천 상황극이 설정되어 있다면 기존 추천 고정!
+    if (!forceReshuffle && currentRecommendedScenario != null) {
+      final exists = published.any((s) => s.id == currentRecommendedScenario!.id);
+      if (exists) {
+        return; // 백그라운드 주기적 동기화로 인한 추천 상황극 빈번 교체 차단
+      }
     }
 
     // 🌟 우선순위 1: 새로 추가/공개되었으나 유저가 아직 확인하지 않은 신규 상황극 (NEW 🔴)

@@ -12,12 +12,12 @@ class RulesPage extends ConsumerWidget {
     final dataService = ref.watch(dataServiceProvider);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('운영규칙 및 공식 근거')),
+      appBar: AppBar(title: const Text('관련 법령 및 공식 지침')),
       body: content(
         [
-          const Text('레퍼런스 문서의 출처를 법령, 공식 지침, 매장 자체 규칙으로 나누어 표시합니다.'),
+          const Text('레퍼런스 문서의 출처를 법령, 공식 지침 등으로 나누어 표시합니다.'),
           const SizedBox(height: 8),
-          const Card(child: ListTile(leading: Icon(Icons.info_outline), title: Text('적용 범위 확인'), subtitle: Text('가상 매장 시연 자료입니다. 실제 의무는 영업신고 유형, 취급 품목, 사업장 규모 등 적용 조건을 확인해야 합니다. 운영 절차 자체를 법적 의무라고 표현하지 않습니다.'))),
+          const Card(child: ListTile(leading: Icon(Icons.info_outline), title: Text('적용 범위 확인'), subtitle: Text('가상 매장 시연 자료입니다. 실제 의무는 영업신고 유형, 취급 품목, 사업장 규모 등 적용 조건을 확인해야 합니다.'))),
           for (final ref in dataService.references) _ReferenceCard(reference: ref),
         ],
         onRefresh: () async {

@@ -13,9 +13,9 @@ if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
 from app.database import engine, Base, SessionLocal
-from app.models import User, ScenarioModel
+from app.models import User, ScenarioModel, ReferenceModel
 from app.security import get_password_hash
-from app.routers import auth, users, admin, scenarios, cases, ai
+from app.routers import auth, users, admin, scenarios, cases, ai, docs
 
 # 데이터베이스 테이블 생성
 Base.metadata.create_all(bind=engine)
@@ -42,6 +42,7 @@ app.include_router(admin.router)
 app.include_router(scenarios.router)
 app.include_router(cases.router)
 app.include_router(ai.router)
+app.include_router(docs.router)
 
 def get_active_local_ip() -> str:
     """현재 PC가 연결된 활성 Wi-Fi / AP의 실시간 IPv4 주소를 자동 감지합니다."""
@@ -90,6 +91,11 @@ def migrate_db_schema():
             db.commit()
             print("DB Migration: 'current_device_id' column added to 'users' table successfully.")
 
+        if "pending_device_id" not in user_columns:
+            db.execute(text("ALTER TABLE users ADD COLUMN pending_device_id TEXT"))
+            db.commit()
+            print("DB Migration: 'pending_device_id' column added to 'users' table successfully.")
+
         # field_cases 테이블 생성 여부 확인 및 자동 생성은 Base.metadata.create_all 이 담당함
     except Exception as e:
         print(f"DB Migration Note: {e}")
@@ -113,6 +119,13 @@ def seed_initial_data():
 
     db: Session = SessionLocal()
     try:
+        # 서버 재구동 시 잔여 고스트 세션 자동 세척 (미해제 current_device_id 초기화)
+        try:
+            db.execute(text("UPDATE users SET current_device_id = NULL"))
+            db.commit()
+        except Exception:
+            pass
+
         # 최초 시스템 관리자 계정이 전혀 없을 때만 기본 'admin' 계정 단 1개 생성 (비밀번호: admin123)
         if not db.query(User).filter(User.role == "admin").first():
             db.add(User(
@@ -125,32 +138,48 @@ def seed_initial_data():
                 average_score=0.0
             ))
 
-        # 초기 시나리오 시드 데이터 (최초 DB 생성 시에만 1회 등록)
-        if db.query(ScenarioModel).count() == 0:
-            initial_scenarios = [
-                ScenarioModel(
-                    id="cafe_out_of_stock_01",
-                    industry="카페",
-                    title="주문 재료 품절 및 변경 안내",
-                    situation="고객이 시그니처 딸기 라떼를 주문했지만, 딸기 청 재고가 모두 소진되어 판매할 수 없는 상황입니다.",
-                    expected_actions="[필수] 재고 소진 상황에 대한 정중한 사과\n[필수] 품절 사유 및 대체 유사 음료(자몽 라떼 등) 추천\n[선택] 음료 제공 지연 시 대기 안내 및 정중한 인사",
-                    linked_rules="식품위생법 관련 지침; 매장 재고 관리 규칙",
-                    reference_codes=["REF_01"],
-                    is_published=True
-                ),
-                ScenarioModel(
-                    id="store_expired_01",
-                    industry="편의점",
-                    title="유통기한 마감 임박 상품 문의 및 환불 안내",
-                    situation="고객이 구매하려는 삼각김밥의 유통기한 마감 시각이 10분 남았다며 교환이나 할인을 요청하는 상황입니다.",
-                    expected_actions="[필수] 유통기한 기준 및 판매 가능 시간 규정 안내\n[필수] 신선도 보장 및 최신 입고 상품 위치 정중 안내\n[선택] 영수증 지참 시 환불 규정 추가 설명",
-                    linked_rules="유통기한 및 교환/환불 규정",
-                    reference_codes=["REF_02"],
-                    is_published=True
-                )
-            ]
-            for sc in initial_scenarios:
-                db.add(sc)
+        # 초기 시나리오 시드 데이터 (assets/data/scenarios.json 파일에서 전체 15개 시나리오 자동 로드하여 DB 등록)
+        json_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "assets", "data", "scenarios.json"))
+        if os.path.exists(json_path):
+            try:
+                with open(json_path, "r", encoding="utf-8") as f:
+                    sc_data = json.load(f)
+                for sc in sc_data:
+                    existing = db.query(ScenarioModel).filter(ScenarioModel.id == sc["id"]).first()
+                    if not existing:
+                        db.add(ScenarioModel(
+                            id=sc["id"],
+                            industry=sc.get("industry", "카페"),
+                            title=sc.get("title", ""),
+                            situation=sc.get("situation", ""),
+                            expected_actions=sc.get("expectedActions", ""),
+                            linked_rules=sc.get("linkedRules", ""),
+                            reference_codes=sc.get("referenceCodes", []),
+                            is_published=sc.get("isPublished", True)
+                        ))
+                db.commit()
+            except Exception as e:
+                print(f"시나리오 시드 로드 예외: {e}")
+
+        # 초기 법령/공식 근거 레퍼런스 시드 데이터 (assets/data/references.json 자동 로드)
+        ref_json_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "assets", "data", "references.json"))
+        if os.path.exists(ref_json_path):
+            try:
+                with open(ref_json_path, "r", encoding="utf-8") as f:
+                    ref_data = json.load(f)
+                for rf in ref_data:
+                    existing = db.query(ReferenceModel).filter(ReferenceModel.code == rf["code"]).first()
+                    if not existing:
+                        db.add(ReferenceModel(
+                            code=rf["code"],
+                            name=rf.get("name", ""),
+                            kind=rf.get("kind", ""),
+                            scope=rf.get("scope", ""),
+                            url=rf.get("url", "")
+                        ))
+                db.commit()
+            except Exception as e:
+                print(f"레퍼런스 시드 로드 예외: {e}")
 
         db.commit()
     finally:
