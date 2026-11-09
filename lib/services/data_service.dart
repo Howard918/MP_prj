@@ -9,6 +9,7 @@ import '../models/official_reference.dart';
 import '../models/practice_report.dart';
 import '../models/field_case.dart';
 import '../models/user_model.dart';
+import '../config/api_config.dart';
 
 final dataServiceProvider = ChangeNotifierProvider<DataService>((ref) => DataService());
 
@@ -116,21 +117,19 @@ class DataService extends ChangeNotifier {
     ];
   }
 
-  // 로컬 초기화 및 데이터 로드 (에셋 + 백엔드 DB + SharedPreferences)
+  // 로컬 초기화 및 백엔드 DB 레퍼런스/시나리오/카테고리 패치
   Future<void> loadData({String? baseUrl}) async {
     if (isLoaded) return;
 
     _initManualDocs();
-    _initDefaultReferences();
     await _loadInitialAssets();
     await _loadFromLocalPrefs();
 
-    if (baseUrl != null && baseUrl.isNotEmpty) {
-      await _fetchScenariosInternal(baseUrl);
-      await _fetchReferencesInternal(baseUrl);
-      await _fetchManualDocsInternal(baseUrl);
-      await _fetchCategoriesInternal(baseUrl);
-    }
+    final targetUrl = (baseUrl != null && baseUrl.isNotEmpty) ? baseUrl : ApiConfig.backendUrl;
+    await _fetchScenariosInternal(targetUrl);
+    await _fetchReferencesInternal(targetUrl);
+    await _fetchManualDocsInternal(targetUrl);
+    await _fetchCategoriesInternal(targetUrl);
 
     isLoaded = true;
     updateRecommendedScenario(forceReshuffle: false);
@@ -142,10 +141,6 @@ class DataService extends ChangeNotifier {
       final scString = await rootBundle.loadString('assets/data/scenarios.json');
       final List<dynamic> scJson = jsonDecode(scString);
       scenarioStore = scJson.map((j) => RoleplayScenario.fromJson(j)).toList();
-
-      final refString = await rootBundle.loadString('assets/data/references.json');
-      final List<dynamic> refJson = jsonDecode(refString);
-      references = refJson.map((j) => OfficialReference.fromJson(j)).toList();
     } catch (e) {
       debugPrint('에셋 데이터 로드 예외: $e');
     }
@@ -905,14 +900,15 @@ class DataService extends ChangeNotifier {
   }
 
   Future<void> refreshData({String? token, String? baseUrl}) async {
-    if (baseUrl != null && baseUrl.isNotEmpty) {
-      await _fetchScenariosInternal(baseUrl);
-      await _fetchManualDocsInternal(baseUrl);
-      await _fetchCategoriesInternal(baseUrl);
-    }
-    if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
-      await _fetchReportsInternal(token, baseUrl);
-      await _fetchFieldCasesInternal(token, baseUrl);
+    final targetUrl = (baseUrl != null && baseUrl.isNotEmpty) ? baseUrl : ApiConfig.backendUrl;
+    await _fetchScenariosInternal(targetUrl);
+    await _fetchReferencesInternal(targetUrl);
+    await _fetchManualDocsInternal(targetUrl);
+    await _fetchCategoriesInternal(targetUrl);
+
+    if (token != null && token.isNotEmpty) {
+      await _fetchReportsInternal(token, targetUrl);
+      await _fetchFieldCasesInternal(token, targetUrl);
     }
 
     updateRecommendedScenario(forceReshuffle: true);
