@@ -134,6 +134,7 @@ def seed_initial_data():
     print("=" * 65 + "\n")
 
     migrate_db_schema()  # DB 스키마 마이그레이션 우선 실행
+    docs.preload_all_pdf_caches()  # 💡 백그라운드에서 모든 docx 문서를 MS Word 원본 100% 동일 PDF로 사전 캐싱!
 
     db: Session = SessionLocal()
     try:

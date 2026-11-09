@@ -234,12 +234,26 @@ class _RagChatBottomSheetState extends ConsumerState<RagChatBottomSheet> {
                               backgroundColor: Colors.indigo.shade50,
                               side: BorderSide(color: Colors.indigo.shade200),
                               onPressed: () {
-                                // 💡 백엔드 RAG 인용 URL에서 문서 docId 동적 파싱 (하드코딩 맵핑 전면 제거)
-                                String docId = Uri.decodeComponent(ref.url.split('/').last)
-                                    .replaceAll('.docx', '')
-                                    .replaceAll('.pdf', '');
+                                // 💡 백엔드 RAG 인용 URL에서 문서 docId 동적 파싱 (ArgumentError 예외 안전 방어)
+                                String rawSegment = ref.url.split('/').last;
+                                if (rawSegment.isEmpty) {
+                                  rawSegment = ref.id;
+                                }
+
+                                String docId = rawSegment;
+                                try {
+                                  docId = Uri.decodeComponent(rawSegment);
+                                } catch (_) {
+                                  try {
+                                    docId = Uri.decodeFull(rawSegment);
+                                  } catch (_) {
+                                    docId = rawSegment; // 예외 발생 시 원본 문자열 안전 사용
+                                  }
+                                }
+
+                                docId = docId.replaceAll('.docx', '').replaceAll('.pdf', '').trim();
                                 if (docId.isEmpty) {
-                                  docId = Uri.decodeComponent(ref.id.split('_').first);
+                                  docId = 'manual';
                                 }
 
                                 Navigator.push(

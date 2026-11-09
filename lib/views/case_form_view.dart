@@ -38,16 +38,20 @@ class _CaseFormState extends ConsumerState<CaseForm> {
 
     final newCase = FieldCase(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
-      authorId: authService.currentUser?.id ?? 'user',
+      authorId: authService.currentUser?.id.toString() ?? 'user',
       authorName: authService.currentUser?.name ?? '수습 알바생',
-      industry: selectedIndustry,
       title: titleController.text.trim(),
       situation: situationController.text.trim(),
       responseDetails: responseController.text.trim(),
       createdAt: DateTime.now(),
     );
 
-    dataService.addFieldCase(newCase);
+    // 💡 토큰과 백엔드 URL을 정확히 전달하여 백엔드 DB 저장 및 관리자 검토 알림 즉시 동기화
+    dataService.addFieldCase(
+      newCase,
+      token: authService.accessToken,
+      baseUrl: authService.baseUrl,
+    );
 
     titleController.clear();
     situationController.clear();

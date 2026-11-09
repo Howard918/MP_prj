@@ -61,6 +61,11 @@ class _DashboardState extends ConsumerState<Dashboard> {
         authService.baseUrl,
       );
 
+      await dataService.fetchFieldCasesFromBackend(
+        authService.accessToken,
+        authService.baseUrl,
+      );
+
       if (authService.isAdmin) {
         _loadAdminUsers();
       }
@@ -179,6 +184,7 @@ class _DashboardState extends ConsumerState<Dashboard> {
 
   // 🔴 상단 관리자 서브 탭 바 (하단 네비게이션과 동일한 디자인 톤 & 매끄러운 색상 전환)
   Widget _buildAdminSubTabBar(DataService dataService) {
+    final authService = ref.read(authServiceProvider);
     final bool hasUnreadUserReports = dataService.hasUnreadAdminUserReports(adminUsers);
 
     final tabs = [
@@ -209,6 +215,10 @@ class _DashboardState extends ConsumerState<Dashboard> {
                 });
                 if (idx == 0) {
                   dataService.clearCaseReviewNotification();
+                  dataService.fetchFieldCasesFromBackend(
+                    authService.accessToken,
+                    authService.baseUrl,
+                  );
                 } else if (idx == 1) {
                   _loadAdminUsers();
                 }
@@ -587,23 +597,11 @@ class _DashboardState extends ConsumerState<Dashboard> {
         // 낮은 점수 / 보완 필요 상황극 영역
         _buildLowScoreSection(dataService),
         const SizedBox(height: 16),
-        Text('맞춤형 추천 상황', style: Theme.of(context).textTheme.titleLarge),
-        const SizedBox(height: 4),
-        if (recScenario != null)
-          panel(
-            '${recScenario.title}',
-            '${recScenario.situation}',
-            Icons.auto_awesome_outlined,
-            () => startPractice(recScenario),
-          )
-        else
-          const Card(
-            child: ListTile(
-              leading: Icon(Icons.info_outline),
-              title: Text('추천 가능한 상황극이 없습니다.'),
-            ),
-          ),
-        const SizedBox(height: 12),
+        // 🌟 AI 맞춤형 추천 상황극 강조 카드
+        _buildHighlightedRecommendationCard(recScenario),
+        const SizedBox(height: 20),
+        const Text('주요 메뉴', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87)),
+        const SizedBox(height: 6),
         panel('교육 리포트', '지난 연습 결과와 보완할 항목을 확인하세요.', Icons.insights, () => selectTab(2)),
         panel('매장 운영규칙', '매장 통합 매뉴얼 문서와 법령 정보를 확인하세요.', Icons.storefront, () => selectTab(3)),
       ],
@@ -1059,30 +1057,6 @@ class _DashboardState extends ConsumerState<Dashboard> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (dataService.hasUnreadCaseReview) ...[
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-            decoration: BoxDecoration(
-              color: Colors.red.shade50,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.red.shade300),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.notifications_active, color: Colors.red, size: 22),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    '🔔 [새로운 현장 사례 요청] 수습생이 작성한 신규 사례가 제출되었습니다. 확인해 주세요!',
-                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.red.shade900),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 14),
-        ],
-
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
@@ -1183,11 +1157,12 @@ class _DashboardState extends ConsumerState<Dashboard> {
   }
 
   void _confirmDeleteCase(FieldCase fieldCase, DataService dataService) {
+    final authService = ref.read(authServiceProvider);
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('현장 사례 삭제'),
-        content: Text('정말로 [${fieldCase.title}] 사례를 삭제하시겠습니까?\n삭제된 사례는 검토 목록에서 제외됩니다.'),
+        content: Text('정말로 [${fieldCase.title}] 사례를 삭제하시겠습니까?\n삭제된 사례는 백엔드 DB 및 검토 목록에서 완전 영구 삭제됩니다.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
@@ -1197,9 +1172,13 @@ class _DashboardState extends ConsumerState<Dashboard> {
             style: FilledButton.styleFrom(backgroundColor: Colors.red),
             onPressed: () {
               Navigator.pop(ctx);
-              dataService.deleteFieldCase(fieldCase.id);
+              dataService.deleteFieldCase(
+                fieldCase.id,
+                token: authService.accessToken,
+                baseUrl: authService.baseUrl,
+              );
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('현장 사례가 삭제되었습니다.')),
+                const SnackBar(content: Text('현장 사례가 백엔드 DB에서 영구 삭제되었습니다.')),
               );
             },
             child: const Text('삭제'),
@@ -1389,6 +1368,100 @@ class _DashboardState extends ConsumerState<Dashboard> {
             child: const Text('삭제'),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildHighlightedRecommendationCard(RoleplayScenario? recScenario) {
+    if (recScenario == null) {
+      return const Card(
+        child: ListTile(
+          leading: Icon(Icons.info_outline),
+          title: Text('추천 가능한 상황극이 없습니다.'),
+        ),
+      );
+    }
+
+    return Container(
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [
+            Color(0xff146b59),
+            Color(0xff1c8c75),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xff146b59).withValues(alpha: 0.3),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(20.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Row(
+                  children: [
+                    Icon(Icons.auto_awesome, color: Colors.amber, size: 22),
+                    SizedBox(width: 8),
+                    Text(
+                      'AI 맞춤 추천 상황',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.white),
+                    ),
+                  ],
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.2),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Text(
+                    '오늘의 추천 🌟',
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            Text(
+              recScenario.title,
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 19, color: Colors.white),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              recScenario.situation,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 13.5, color: Colors.white.withValues(alpha: 0.9), height: 1.4),
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.white,
+                  foregroundColor: const Color(0xff146b59),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  elevation: 2,
+                ),
+                onPressed: () => startPractice(recScenario),
+                icon: const Icon(Icons.play_arrow_rounded, size: 20),
+                label: const Text('지금 바로 실전 연습하기', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

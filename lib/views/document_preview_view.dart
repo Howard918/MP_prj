@@ -55,7 +55,9 @@ class _DocumentPreviewScreenState extends ConsumerState<DocumentPreviewScreen> {
       final baseUrl = authService.baseUrl;
       final token = authService.accessToken;
 
-      final url = Uri.parse('$baseUrl/api/docs/preview/${widget.docId}');
+      // 💡 URI 인코딩 안전 감싸기 (한글 파일명 및 특수문자 지원)
+      final encodedDocId = Uri.encodeComponent(widget.docId.trim());
+      final url = Uri.parse('$baseUrl/api/docs/preview/$encodedDocId');
       final response = await http.get(
         url,
         headers: {

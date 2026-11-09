@@ -25,6 +25,7 @@ class DataService extends ChangeNotifier {
   String? currentUserId;
   Set<String> readScenarioIds = {}; // 현재 유저가 개별 확인/수행한 시나리오 ID 목록
   Set<String> readReportIds = {}; // 현재 유저가 개별 확인/열람한 훈련 리포트 ID 목록
+  Set<String> reviewedCaseIds = {}; // 관리자가 개별 확인/열람한 검토 대기 사례 ID 목록
   final Map<String, int> _scenarioModTimes = {};
   final Map<String, int> _scenarioReadTimes = {};
 
@@ -33,8 +34,15 @@ class DataService extends ChangeNotifier {
 
   static const String _customScenariosKey = 'custom_local_scenarios';
 
-  // 🔴 각 유저별 독립된 빨간 닷 알림 상태
-  bool hasUnreadCaseReview = false; // 관리자용: 신규 현장 사례 제출 알림 (관리자 탭 🔴)
+  // 🔴 관리자용: 백엔드 DB에 새로 등록된 검토 대기(pending) 현장 사례 중 관리자가 열람/확인하지 않은 항목 존재 여부 동적 연산
+  bool get hasUnreadCaseReview {
+    final pendingCases = fieldCaseStore.where(
+      (c) => c.status == FieldCaseStatus.pending && !c.isConvertedToScenario
+    ).toList();
+
+    if (pendingCases.isEmpty) return false;
+    return pendingCases.any((c) => !reviewedCaseIds.contains(c.id.trim()));
+  }
 
   // 🔴 상황극 탭 알림: 공개된 시나리오 중 유저가 확인하지 않은(NEW) 항목이 1개라도 남아있는 경우 동적 연산
   bool get hasUnreadNewScenario {
@@ -139,18 +147,14 @@ class DataService extends ChangeNotifier {
       }
     }
 
-    // 3. 관리자 전용 신규 현장 사례 검토 알림 확인
+    // 3. 관리자 전용 신규 현장 사례 검토 열람 ID 세트 로드
     if (isAdmin) {
-      final lastCaseSubmitTime = prefs.getInt('last_case_submitted_time') ?? 0;
-      final lastCaseCheckTime = prefs.getInt('last_case_review_checked_time_$userId') ?? 0;
-
-      if (lastCaseSubmitTime > lastCaseCheckTime) {
-        hasUnreadCaseReview = true;
+      final reviewedList = prefs.getStringList('reviewed_case_ids_$userId');
+      if (reviewedList != null) {
+        reviewedCaseIds = reviewedList.toSet();
       } else {
-        hasUnreadCaseReview = false;
+        reviewedCaseIds = {};
       }
-    } else {
-      hasUnreadCaseReview = false;
     }
 
     updateRecommendedScenario(forceReshuffle: false);
@@ -263,25 +267,26 @@ class DataService extends ChangeNotifier {
     notifyListeners();
   }
 
-  // 사례 검토 알림 확인/해제 (현재 유저/관리자 전용 타임스탬프 갱신)
+  // 사례 검토 알림 확인/해제 (현재 관리자가 검토 대기 목록을 열람했을 때 신규 ID 세트 갱신)
   void clearCaseReviewNotification() async {
-    hasUnreadCaseReview = false;
-    notifyListeners();
-    if (currentUserId != null) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setInt('last_case_review_checked_time_$currentUserId', DateTime.now().millisecondsSinceEpoch);
+    final pendingCases = fieldCaseStore.where(
+      (c) => c.status == FieldCaseStatus.pending && !c.isConvertedToScenario
+    ).toList();
+
+    bool changed = false;
+    for (final c in pendingCases) {
+      if (reviewedCaseIds.add(c.id.trim())) {
+        changed = true;
+      }
     }
-  }
 
-  // 관리자 유저들에게 신규 현장 사례 검토 알림 전송 🔴
-  Future<void> triggerCaseReviewNotification(String authorId) async {
-    final now = DateTime.now().millisecondsSinceEpoch;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt('last_case_submitted_time', now);
-    await prefs.setString('last_case_submitter_id', authorId);
-
-    hasUnreadCaseReview = true;
-    notifyListeners();
+    if (changed || pendingCases.isEmpty) {
+      notifyListeners();
+      if (currentUserId != null) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setStringList('reviewed_case_ids_$currentUserId', reviewedCaseIds.toList());
+      }
+    }
   }
 
   // 특정 유저에게 훈련 리포트 생성 및 피드백 알림 전송 🔴
@@ -380,8 +385,7 @@ class DataService extends ChangeNotifier {
 
   void addFieldCase(FieldCase fieldCase, {String? token, String? baseUrl}) async {
     fieldCaseStore.insert(0, fieldCase);
-    // 관리자 유저들에게 현장 사례 검토 알림 발동 🔴
-    triggerCaseReviewNotification(fieldCase.authorId);
+    fieldCaseStore.sort((a, b) => b.createdAt.compareTo(a.createdAt));
     notifyListeners();
 
     if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
@@ -392,10 +396,11 @@ class DataService extends ChangeNotifier {
             'Content-Type': 'application/json',
             'Authorization': 'Bearer $token',
           },
-          body: jsonEncode(fieldCase.toJson()),
+          body: jsonEncode(fieldCase.toBackendJson()),
         ).timeout(const Duration(seconds: 4));
         if (response.statusCode == 201) {
-          debugPrint('백엔드 현장 사례 저장 성공!');
+          debugPrint('백엔드 DB에 신규 현장 사례 저장 성공!');
+          await _fetchFieldCasesInternal(token, baseUrl);
         }
       } catch (e) {
         debugPrint('백엔드 현장 사례 저장 실패: $e');
@@ -445,6 +450,14 @@ class DataService extends ChangeNotifier {
     }
   }
 
+  // 백엔드 DB에서 현장 사례 목록 패치
+  Future<void> fetchFieldCasesFromBackend(String? token, String? baseUrl) async {
+    if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
+      await _fetchFieldCasesInternal(token, baseUrl);
+      notifyListeners();
+    }
+  }
+
   // 내부 현장 사례 동기화 로직
   Future<void> _fetchFieldCasesInternal(String token, String baseUrl) async {
     try {
@@ -458,20 +471,12 @@ class DataService extends ChangeNotifier {
 
       if (response.statusCode == 200) {
         final List<dynamic> jsonList = json.decode(utf8.decode(response.bodyBytes));
-        final serverCases = jsonList.map((j) => FieldCase.fromJson(j)).toList();
-        
-        // 백엔드 DB 기준으로 덮어쓰기 (아직 업로드 안된 로컬 데이터 보존)
-        final List<FieldCase> syncedCases = List.from(serverCases);
-        for (final local in fieldCaseStore) {
-          if (!serverCases.any((s) => s.id.trim() == local.id.trim())) {
-            syncedCases.add(local);
-          }
-        }
-        fieldCaseStore = syncedCases;
+        fieldCaseStore = jsonList.map((j) => FieldCase.fromJson(j)).toList();
         fieldCaseStore.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+        notifyListeners();
       }
     } catch (e) {
-      debugPrint('백엔드 현장 사례 동기화 실패 (로컬 유지): $e');
+      debugPrint('백엔드 현장 사례 동기화 실패: $e');
     }
   }
 
@@ -482,12 +487,12 @@ class DataService extends ChangeNotifier {
     scenarioStore.clear();
     readScenarioIds.clear();
     readReportIds.clear();
+    reviewedCaseIds.clear();
     _scenarioModTimes.clear();
     _scenarioReadTimes.clear();
     _traineeReportTimes.clear();
     _adminUserCheckTimes.clear();
     currentUserId = null;
-    hasUnreadCaseReview = false;
     currentRecommendedScenario = null;
     isLoaded = false; // 💡 신규 계정 진입 시 백엔드 DB 최신 데이터 패치 유도
     notifyListeners();

@@ -55,7 +55,7 @@ def _call_openai_api_sync(url: str, payload: dict, timeout_sec: float = 20.0) ->
             detail=f"OpenAI API 통신 연결 실패: {str(e)}"
         )
 
-# 1. [POST] /ai/chat: 백엔드에서 OpenAI Chat Completions 프록시 호출 (범용 매장 수습 직원 페르소나 적용)
+# 1. [POST] /ai/chat: 백엔드에서 OpenAI Chat Completions 프록시 호출
 @router.post("/chat")
 async def ai_chat(req: ChatRequest, current_user: User = Depends(get_current_user)):
     payload = {
@@ -102,7 +102,7 @@ async def ai_evaluate(req: EvaluationRequest, current_user: User = Depends(get_c
 
 
 # -------------------------------------------------------------------------
-# 범용 B2B 단일 사업장 DOCX 매뉴얼 동적 RAG 벡터 저장소
+# 범용 B2B 단일 사업장 DOCX 매뉴얼 동적 RAG 벡터 저장소 (NLP 키워드 하이브리드 검색)
 # -------------------------------------------------------------------------
 def extract_docx_paragraphs(docx_path: str) -> List[str]:
     """.docx 오픈포맷 파일 내의 단락(Paragraph) 텍스트를 파이썬 내장 zipfile로 직접 파싱"""
@@ -200,53 +200,91 @@ class InMemoryVectorStore:
             self.embeddings.append(item["embedding"])
         self.initialized = True
 
-    def search(self, query: str, top_k: int = 2):
+    def search(self, query: str, top_k: int = 4):
         self.initialize()
-        payload = {"input": query, "model": "text-embedding-3-small"}
+
+        raw_query = query.strip()
+        query_terms = [w.strip() for w in raw_query.split() if len(w.strip()) > 0]
+
+        # 💡 NLP AI 쿼리 자연어 확장 & 단발성 키워드 의미 보강
+        expanded_query = raw_query
+        keyword_expansions = {
+            "서비스": "서비스 고객 응대 손님 친절 인사 고객케어 컴플레인 예절 수칙",
+            "복장": "복장 유니폼 용모 손톱 머리망 앞치마 용모수칙 착용",
+            "환불": "환불 결제 취소 영수증 교환 정산 POS 변경",
+            "위생": "위생 식품안전 소독 청결 손씻기 교차오염 복장",
+            "음료": "음료 제조 레시피 사이즈 정량 오제조 메뉴",
+            "장비": "장비 시설 머신 고장 점검 수리 수칙 가동중단",
+            "개점": "개점 마감 시재 금고 경보기 오픈 준비 수칙",
+            "마감": "마감 개점 금고 시재 정산 청소 영업종료",
+            "안전": "안전 화상 사고 응급처치 소화기 대피 비상대응",
+            "발주": "발주 재고 검수 입고 보관 소비기한 유통기한",
+            "POS": "POS 금전 정산 카드 현금 영수증 중복결제 시재",
+            "손님": "고객 손님 응대 인사 불만 케어 서비스 안내",
+        }
+        for kw, exp in keyword_expansions.items():
+            if kw in raw_query:
+                expanded_query += " " + exp
+
+        payload = {"input": expanded_query, "model": "text-embedding-3-small"}
         result = _call_openai_api_sync("https://api.openai.com/v1/embeddings", payload, 10.0)
         q_emb = result["data"][0]["embedding"]
 
-        # Cosine Similarity (코사인 유사도 계산)
+        # 💡 하이브리드 검색 알고리즘 (70% 벡터 코사인 유사도 + 30% 제목/내용 키워드 매칭 스코어)
         scored_results = []
         for i, doc_emb in enumerate(self.embeddings):
             dot_product = sum(a * b for a, b in zip(q_emb, doc_emb))
             norm_q = math.sqrt(sum(a * a for a in q_emb))
             norm_d = math.sqrt(sum(b * b for b in doc_emb))
-            sim = dot_product / (norm_q * norm_d) if norm_q and norm_d else 0.0
-            scored_results.append((sim, self.docs[i]))
+            cosine_sim = dot_product / (norm_q * norm_d) if norm_q and norm_d else 0.0
+
+            doc_title = self.docs[i]["title"]
+            doc_content = self.docs[i]["content"]
+
+            keyword_score = 0.0
+            for term in query_terms:
+                if term in doc_title:
+                    keyword_score += 0.35  # 제목 키워드 가중치
+                if term in doc_content:
+                    keyword_score += 0.15  # 내용 키워드 가중치
+
+            final_score = (0.7 * cosine_sim) + (0.3 * min(keyword_score, 1.0))
+            scored_results.append((final_score, self.docs[i]))
 
         scored_results.sort(key=lambda x: x[0], reverse=True)
-        return [doc for sim, doc in scored_results[:top_k]]
+        return [doc for score, doc in scored_results[:top_k]]
 
 vector_store = InMemoryVectorStore()
 
-# 3. [POST] /ai/search: AI 어시스턴트 RAG 파이프라인 (동적 매장 매뉴얼 기반)
+# 3. [POST] /ai/search: AI 어시스턴트 RAG 파이프라인 (자연어 NLP 처리 & 동적 매장 매뉴얼)
 @router.post("/search", response_model=RagResponseSchema)
 async def ai_search_rag(
     req: SearchRequest,
     current_user: User = Depends(get_current_user)
 ):
-    # 1. Retrieve (백엔드 docx 매뉴얼 문서 대상 벡터 검색)
-    retrieved_docs = await asyncio.to_thread(vector_store.search, req.query, 2)
+    # 1. Retrieve (하이브리드 NLP 벡터 검색으로 상위 4개 관련 매뉴얼 추출)
+    retrieved_docs = await asyncio.to_thread(vector_store.search, req.query, 4)
 
     # 2. Generate (프롬프트 구성 및 LLM 호출)
     context_str = "\n\n".join([f"[{d['id']}] {d['title']}: {d['content']}" for d in retrieved_docs])
 
-    system_prompt = f"""너는 backend/doc/ 매뉴얼을 따르는 매장의 수습 아르바이트생을 돕는 친절한 AI 어시스턴트야.
-아래의 [참고 매뉴얼 문서]만을 기반으로 사용자의 질문에 정확하고 간결하게 답변해줘.
-만약 문서에 없는 내용이라면 "제공된 매뉴얼에서는 해당 내용을 찾을 수 없습니다."라고 답변해.
+    system_prompt = f"""너는 backend/doc/ 매뉴얼을 따르는 매장의 수습 아르바이트생을 돕는 친절하고 유능한 AI 어시스턴트야.
+사용자가 '서비스', '복장', '위생', '환불'과 같은 단발성 키워드나 유의어, 질문을 입력했을 때 아래의 [참고 매뉴얼 문서]를 바탕으로 이해하기 쉽고 자연스럽게 맥락을 정돈하여 친절하고 풍부하게 자연어로 답변해줘.
 
 [참고 매뉴얼 문서]
 {context_str}
 
+지침:
+1. 사용자가 단발성 단어나 동의어를 입력하더라도 [참고 매뉴얼 문서]에 관련 지침이 포함되어 있다면 절대 "찾을 수 없습니다"라고 답변하지 말고 관련 핵심 수칙을 친절히 정돈해서 설명해줘.
+2. 매뉴얼 내용과 완전히 무관한 질문(예: 주식, 우주, 연예인 관련 질문)에 대해서만 "제공된 매뉴얼에서는 해당 내용을 찾을 수 없습니다."라고 답변해줘.
+
 응답은 반드시 아래 JSON 형식으로 반환해야 해:
 {{
-  "answer": "사용자 질문에 대한 자연스러운 답변 텍스트",
+  "answer": "사용자 질문에 대한 자연스럽고 친절하며 풍부한 자연어 답변 텍스트",
   "references": [
     {{
-      "id": "문서ID",
-      "title": "문서 제목",
-      "url": "문서 미리보기 URL (예: /api/docs/preview/manual)",
+      "id": "문서ID (예: 04_고객응대_및_서비스_1)",
+      "title": "문서 제목 (예: 04 고객응대 및 서비스 - 1. 기본 응대 원칙)",
       "match_text": "답변의 근거가 된 핵심 문구 (매뉴얼 내용 중 15자 내외 발췌)"
     }}
   ]

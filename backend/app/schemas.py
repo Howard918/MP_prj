@@ -87,6 +87,8 @@ class ScenarioResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+from pydantic import Field
+
 # 현장 사례 요청/응답 스키마
 class FieldCaseCreate(BaseModel):
     id: Optional[str] = None
@@ -94,9 +96,11 @@ class FieldCaseCreate(BaseModel):
     industry: Optional[str] = "매장 운영"
     title: str
     situation: str
-    response_details: str
+    response_details: str = Field(..., alias="responseDetails")
     status: Optional[str] = "pending"
     is_converted_to_scenario: Optional[bool] = False
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 class FieldCaseResponse(BaseModel):
     id: str
