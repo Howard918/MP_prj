@@ -132,8 +132,8 @@ def seed_initial_data():
         except Exception:
             pass
 
-        # 최초 시스템 관리자 계정이 전혀 없을 때만 기본 'admin' 계정 단 1개 생성 (비밀번호: admin123)
-        if not db.query(User).filter(User.role == "admin").first():
+        # 기본 시스템 관리자 계정('admin') 및 기본 수습생 계정('user') 자동 생성
+        if not db.query(User).filter(User.email == "admin").first():
             db.add(User(
                 email="admin",
                 hashed_password=get_password_hash("admin123"),
@@ -143,6 +143,18 @@ def seed_initial_data():
                 weakness_categories=[],
                 average_score=0.0
             ))
+
+        if not db.query(User).filter(User.email == "user").first():
+            db.add(User(
+                email="user",
+                hashed_password=get_password_hash("user123"),
+                name="수습 알바생",
+                role="user",
+                total_sessions=0,
+                weakness_categories=[],
+                average_score=0.0
+            ))
+        db.commit()
 
         # 기본 업무 카테고리 시드 데이터 자동 생성
         default_cats = ['음료/메뉴', '고객 서비스', '안전/비상대응', '위생/식품안전', 'POS/금전정산', '시설/장비관리']
