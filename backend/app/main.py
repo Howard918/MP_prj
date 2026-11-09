@@ -13,7 +13,7 @@ if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
 from app.database import engine, Base, SessionLocal
-from app.models import User, ScenarioModel, ReferenceModel
+from app.models import User, ScenarioModel, ReferenceModel, CategoryModel
 from app.security import get_password_hash
 from app.routers import auth, users, admin, scenarios, cases, ai, docs
 
@@ -96,7 +96,25 @@ def migrate_db_schema():
             db.commit()
             print("DB Migration: 'pending_device_id' column added to 'users' table successfully.")
 
-        # field_cases 테이블 생성 여부 확인 및 자동 생성은 Base.metadata.create_all 이 담당함
+        # scenarios, field_cases, practice_reports 테이블의 category 컬럼 점검
+        res_sc = db.execute(text("PRAGMA table_info(scenarios)"))
+        sc_cols = [row[1] for row in res_sc.fetchall()]
+        if "category" not in sc_cols:
+            db.execute(text("ALTER TABLE scenarios ADD COLUMN category TEXT"))
+            db.commit()
+
+        res_pr = db.execute(text("PRAGMA table_info(practice_reports)"))
+        pr_cols = [row[1] for row in res_pr.fetchall()]
+        if "category" not in pr_cols:
+            db.execute(text("ALTER TABLE practice_reports ADD COLUMN category TEXT"))
+            db.commit()
+
+        res_fc = db.execute(text("PRAGMA table_info(field_cases)"))
+        fc_cols = [row[1] for row in res_fc.fetchall()]
+        if "category" not in fc_cols:
+            db.execute(text("ALTER TABLE field_cases ADD COLUMN category TEXT"))
+            db.commit()
+
     except Exception as e:
         print(f"DB Migration Note: {e}")
     finally:
@@ -138,7 +156,24 @@ def seed_initial_data():
                 average_score=0.0
             ))
 
-        # 초기 시나리오 시드 데이터 (assets/data/scenarios.json 파일에서 전체 15개 시나리오 자동 로드하여 DB 등록)
+        # 기본 업무 카테고리 시드 데이터 자동 생성
+        default_cats = ['음료/메뉴', '고객 서비스', '안전/비상대응', '위생/식품안전', 'POS/금전정산', '시설/장비관리']
+        for cat_name in default_cats:
+            if not db.query(CategoryModel).filter(CategoryModel.name == cat_name).first():
+                db.add(CategoryModel(name=cat_name))
+        db.commit()
+
+        # 업무 카테고리 매핑 테이블
+        category_mapping = {
+            'c-01': '음료/메뉴', 'c-02': '음료/메뉴', 'r-01': '음료/메뉴', 'cafe_out_of_stock_01': '음료/메뉴',
+            'c-03': '위생/식품안전', 'cv-02': '위생/식품안전', 'r-02': '위생/식품안전', 'r-03': '위생/식품안전', 'store_expired_01': '위생/식품안전',
+            'c-04': '고객 서비스', 'cv-01': '고객 서비스', 'cv-04': '고객 서비스', 'r-05': '고객 서비스',
+            'cv-05': '안전/비상대응', 'r-04': '안전/비상대응',
+            'c-05': '시설/장비관리',
+            'cv-03': 'POS/금전정산'
+        }
+
+        # 초기 시나리오 시드 데이터 및 카테고리 자동 최신화
         json_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "assets", "data", "scenarios.json"))
         if os.path.exists(json_path):
             try:
@@ -146,10 +181,12 @@ def seed_initial_data():
                     sc_data = json.load(f)
                 for sc in sc_data:
                     existing = db.query(ScenarioModel).filter(ScenarioModel.id == sc["id"]).first()
+                    cat = category_mapping.get(sc["id"], "고객 서비스")
                     if not existing:
                         db.add(ScenarioModel(
                             id=sc["id"],
-                            industry=sc.get("industry", "카페"),
+                            category=cat,
+                            industry="매장 운영",
                             title=sc.get("title", ""),
                             situation=sc.get("situation", ""),
                             expected_actions=sc.get("expectedActions", ""),
@@ -157,6 +194,9 @@ def seed_initial_data():
                             reference_codes=sc.get("referenceCodes", []),
                             is_published=sc.get("isPublished", True)
                         ))
+                    elif not existing.category:
+                        existing.category = cat
+                        db.add(existing)
                 db.commit()
             except Exception as e:
                 print(f"시나리오 시드 로드 예외: {e}")

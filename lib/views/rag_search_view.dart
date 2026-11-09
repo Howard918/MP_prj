@@ -234,15 +234,12 @@ class _RagChatBottomSheetState extends ConsumerState<RagChatBottomSheet> {
                               backgroundColor: Colors.indigo.shade50,
                               side: BorderSide(color: Colors.indigo.shade200),
                               onPressed: () {
-                                // 참고 문서 URL/ID 기반으로 올바른 PDF docId 매핑하여 미리보기 화면 전환
-                                String docId = 'cafe';
-                                final combinedKey = '${ref.url}_${ref.id}_${ref.title}'.toLowerCase();
-                                if (combinedKey.contains('convenience') || combinedKey.contains('편의점')) {
-                                  docId = 'convenience_store';
-                                } else if (combinedKey.contains('restaurant') || combinedKey.contains('식당')) {
-                                  docId = 'restaurant';
-                                } else if (combinedKey.contains('cafe') || combinedKey.contains('카페')) {
-                                  docId = 'cafe';
+                                // 💡 백엔드 RAG 인용 URL에서 문서 docId 동적 파싱 (하드코딩 맵핑 전면 제거)
+                                String docId = Uri.decodeComponent(ref.url.split('/').last)
+                                    .replaceAll('.docx', '')
+                                    .replaceAll('.pdf', '');
+                                if (docId.isEmpty) {
+                                  docId = Uri.decodeComponent(ref.id.split('_').first);
                                 }
 
                                 Navigator.push(

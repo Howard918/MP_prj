@@ -34,7 +34,8 @@ class ChatMessageSchema(BaseModel):
 class PracticeReportCreate(BaseModel):
     scenario_id: str
     scenario_title: str
-    industry: str
+    category: Optional[str] = "고객 서비스"
+    industry: Optional[str] = "매장 운영"
     date_time: Optional[datetime] = None
     score: int
     feedback: str
@@ -47,7 +48,8 @@ class PracticeReportResponse(BaseModel):
     user_id: int
     scenario_id: str
     scenario_title: str
-    industry: str
+    category: Optional[str] = "고객 서비스"
+    industry: Optional[str] = "매장 운영"
     date_time: datetime
     score: int
     feedback: str
@@ -60,10 +62,11 @@ class PracticeReportResponse(BaseModel):
 class AdminCommentUpdate(BaseModel):
     admin_comment: str
 
-# 시나리오 요청/응답 스키마
+# 시나리오 요청/응답 스키마 (업무 카테고리 포함)
 class ScenarioCreate(BaseModel):
     id: Optional[str] = None
-    industry: str
+    category: Optional[str] = "고객 서비스" # 업무 카테고리 (음료/메뉴, 고객 서비스, 안전/비상대응, 위생/식품안전, POS/금전정산, 시설/장비관리)
+    industry: Optional[str] = "매장 운영"
     title: str
     situation: str
     expected_actions: str
@@ -73,7 +76,8 @@ class ScenarioCreate(BaseModel):
 
 class ScenarioResponse(BaseModel):
     id: str
-    industry: str
+    category: Optional[str] = "고객 서비스"
+    industry: Optional[str] = "매장 운영"
     title: str
     situation: str
     expected_actions: str
@@ -86,7 +90,8 @@ class ScenarioResponse(BaseModel):
 # 현장 사례 요청/응답 스키마
 class FieldCaseCreate(BaseModel):
     id: Optional[str] = None
-    industry: str
+    category: Optional[str] = "고객 서비스"
+    industry: Optional[str] = "매장 운영"
     title: str
     situation: str
     response_details: str
@@ -97,7 +102,8 @@ class FieldCaseResponse(BaseModel):
     id: str
     author_id: str
     author_name: str
-    industry: str
+    category: Optional[str] = "고객 서비스"
+    industry: Optional[str] = "매장 운영"
     title: str
     situation: str
     response_details: str
@@ -114,6 +120,17 @@ class OfficialReferenceSchema(BaseModel):
     kind: str
     scope: str
     url: Optional[str] = ""
+
+    model_config = ConfigDict(from_attributes=True)
+
+# 동적 카테고리 요청/응답 스키마
+class CategoryCreate(BaseModel):
+    name: str
+
+class CategoryResponse(BaseModel):
+    id: int
+    name: str
+    created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
 

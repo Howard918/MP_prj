@@ -27,7 +27,7 @@ class _DashboardState extends ConsumerState<Dashboard> {
   int tab = 0;
   int _previousTab = 0; // 방향성 탭 전환 애니메이션용 이전 탭 인덱스 추적
   int adminSubTab = 0; // 0: 시나리오 관리, 1: 사례 검토 및 변환, 2: 유저 회원 관리
-  String selectedIndustry = '전체';
+  String selectedCategory = '전체'; // 업무 카테고리 필터링 (음료/메뉴, 고객 서비스, 안전/비상대응 등)
   String selectedReportIndustry = '전체';
 
   List<UserModel> adminUsers = [];
@@ -182,9 +182,8 @@ class _DashboardState extends ConsumerState<Dashboard> {
     final bool hasUnreadUserReports = dataService.hasUnreadAdminUserReports(adminUsers);
 
     final tabs = [
-      {'index': 0, 'label': '시나리오', 'icon': Icons.edit_note, 'badge': false},
-      {'index': 1, 'label': '사례 검토/변환', 'icon': Icons.rate_review_outlined, 'badge': dataService.hasUnreadCaseReview},
-      {'index': 2, 'label': '유저 관리', 'icon': Icons.people_alt_outlined, 'badge': hasUnreadUserReports},
+      {'index': 0, 'label': '사례 검토/변환', 'icon': Icons.rate_review_outlined, 'badge': dataService.hasUnreadCaseReview},
+      {'index': 1, 'label': '유저 회원 관리', 'icon': Icons.people_alt_outlined, 'badge': hasUnreadUserReports},
     ];
 
     return Container(
@@ -208,9 +207,9 @@ class _DashboardState extends ConsumerState<Dashboard> {
                 setState(() {
                   adminSubTab = idx;
                 });
-                if (idx == 1) {
+                if (idx == 0) {
                   dataService.clearCaseReviewNotification();
-                } else if (idx == 2) {
+                } else if (idx == 1) {
                   _loadAdminUsers();
                 }
               },
@@ -252,6 +251,128 @@ class _DashboardState extends ConsumerState<Dashboard> {
             ),
           );
         }).toList(),
+      ),
+    );
+  }
+
+  void _showAddCategoryDialog() {
+    final catController = TextEditingController();
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.add_box_outlined, color: Color(0xff146b59)),
+            SizedBox(width: 8),
+            Text('신규 업무 카테고리 추가', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+          ],
+        ),
+        content: TextField(
+          controller: catController,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: '카테고리명',
+            hintText: '예: 이벤트/프로모션, 배달/포장 등',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('취소'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: const Color(0xff146b59)),
+            onPressed: () async {
+              final newName = catController.text.trim();
+              if (newName.isNotEmpty) {
+                Navigator.pop(ctx);
+                final authService = ref.read(authServiceProvider);
+                final dataService = ref.read(dataServiceProvider);
+                final success = await dataService.addCategory(
+                  newName,
+                  token: authService.accessToken,
+                  baseUrl: authService.baseUrl,
+                );
+                if (mounted && success) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('새 카테고리 [$newName]이(가) 추가되었습니다.')),
+                  );
+                }
+              }
+            },
+            child: const Text('추가'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showManageCategoriesDialog() {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          final dataService = ref.watch(dataServiceProvider);
+          final authService = ref.watch(authServiceProvider);
+
+          return AlertDialog(
+            title: const Row(
+              children: [
+                Icon(Icons.category_outlined, color: Color(0xff146b59)),
+                SizedBox(width: 8),
+                Text('업무 카테고리 관리 및 삭제', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+              ],
+            ),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  const Text('삭제 시 해당 카테고리 분류가 소멸되며 DB에도 즉시 최신화 반영됩니다.', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                  const SizedBox(height: 12),
+                  for (final cat in dataService.categories)
+                    ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(_categoryIcon(cat), color: const Color(0xff146b59)),
+                      title: Text(cat, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                      trailing: IconButton(
+                        icon: const Icon(Icons.delete_outline, color: Colors.red),
+                        onPressed: () async {
+                          final confirm = await showDialog<bool>(
+                            context: ctx,
+                            builder: (c) => AlertDialog(
+                              title: const Text('카테고리 삭제'),
+                              content: Text('[$cat] 카테고리를 정말로 삭제하시겠습니까?'),
+                              actions: [
+                                TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('취소')),
+                                FilledButton(style: FilledButton.styleFrom(backgroundColor: Colors.red), onPressed: () => Navigator.pop(c, true), child: const Text('삭제')),
+                              ],
+                            ),
+                          );
+                          if (confirm == true) {
+                            await dataService.deleteCategory(
+                              cat,
+                              token: authService.accessToken,
+                              baseUrl: authService.baseUrl,
+                            );
+                            setDialogState(() {});
+                          }
+                        },
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('닫기'),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -420,26 +541,25 @@ class _DashboardState extends ConsumerState<Dashboard> {
     }
 
     final published = dataService.scenarioStore.where((s) => s.isPublished).toList();
-    final visibleScenarios = selectedIndustry == '전체'
+    final visibleScenarios = selectedCategory == '전체'
         ? published
-        : published.where((s) => s.industry == selectedIndustry).toList();
-    final drafts = dataService.scenarioStore.where((s) => !s.isPublished).toList();
+        : published.where((s) => s.category == selectedCategory).toList();
     final recScenario = dataService.currentRecommendedScenario;
 
-    // 📂 유저용 카테고리/업종별 그룹화 시나리오 Map
+    // 📂 업무 카테고리별 그룹화 시나리오 Map
     final Map<String, List<RoleplayScenario>> groupedVisibleScenarios = {};
     for (final s in visibleScenarios) {
-      groupedVisibleScenarios.putIfAbsent(s.industry, () => []).add(s);
+      groupedVisibleScenarios.putIfAbsent(s.category, () => []).add(s);
     }
 
-    // 📂 관리자용 카테고리/업종별 그룹화 전체 시나리오 Map
+    // 📂 관리자 전용 업무 카테고리별 그룹화 시나리오 Map
     final Map<String, List<RoleplayScenario>> groupedAdminScenarios = {};
     for (final s in dataService.scenarioStore) {
-      groupedAdminScenarios.putIfAbsent(s.industry, () => []).add(s);
+      groupedAdminScenarios.putIfAbsent(s.category, () => []).add(s);
     }
     
     final allPages = <List<Widget>>[
-      // 0번 탭: 홈
+      // 0번 탭: 홈 (단일 사업장 워크스페이스)
       [
         Card(
           color: Theme.of(context).colorScheme.primaryContainer,
@@ -450,9 +570,9 @@ class _DashboardState extends ConsumerState<Dashboard> {
               children: [
                 Icon(Icons.waving_hand_outlined, size: 30, color: Theme.of(context).colorScheme.onPrimaryContainer),
                 const SizedBox(height: 14),
-                Text('첫 근무, 차근차근 연습해요', style: Theme.of(context).textTheme.headlineSmall?.copyWith(color: Theme.of(context).colorScheme.onPrimaryContainer)),
+                Text('매장 실전 훈련 노트', style: Theme.of(context).textTheme.headlineSmall?.copyWith(color: Theme.of(context).colorScheme.onPrimaryContainer)),
                 const SizedBox(height: 8),
-                Text('매장에서 만날 수 있는 상황을 골라 응대 순서를 익혀보세요.', style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: Theme.of(context).colorScheme.onPrimaryContainer)),
+                Text('매장 자체 매뉴얼을 기반으로 AI와 함께 실전 상황극을 훈련해 보세요.', style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: Theme.of(context).colorScheme.onPrimaryContainer)),
                 const SizedBox(height: 18),
                 FilledButton.icon(
                   onPressed: () => selectTab(1),
@@ -472,7 +592,7 @@ class _DashboardState extends ConsumerState<Dashboard> {
         if (recScenario != null)
           panel(
             '${recScenario.title}',
-            '${recScenario.industry} | ${recScenario.situation}',
+            '${recScenario.situation}',
             Icons.auto_awesome_outlined,
             () => startPractice(recScenario),
           )
@@ -485,82 +605,207 @@ class _DashboardState extends ConsumerState<Dashboard> {
           ),
         const SizedBox(height: 12),
         panel('교육 리포트', '지난 연습 결과와 보완할 항목을 확인하세요.', Icons.insights, () => selectTab(2)),
-        panel('매장 운영규칙', '매장 규칙과 현장 사례를 확인하세요.', Icons.storefront, () => selectTab(3)),
+        panel('매장 운영규칙', '매장 통합 매뉴얼 문서와 법령 정보를 확인하세요.', Icons.storefront, () => selectTab(3)),
       ],
 
-      // 1번 탭: 상황극 목록 (카테고리/업종별 그룹화 표시)
+      // 1번 탭: 상황극 목록 (관리자 직관 제어 및 유저 전용 연습)
       [
-        Text('어떤 상황을 연습할까요?', style: Theme.of(context).textTheme.headlineSmall),
-        const SizedBox(height: 6),
-        const Text('업종을 선택하거나 아래 카테고리별 상황극을 살펴보세요.'),
-        const SizedBox(height: 16),
-        Wrap(
-          spacing: 8,
-          runSpacing: 4,
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            for (final industry in ['전체', '카페', '편의점', '식당'])
-              ChoiceChip(
-                label: Text(industry),
-                selected: selectedIndustry == industry,
-                onSelected: (_) => setState(() => selectedIndustry = industry),
+            Expanded(
+              child: Text('어떤 상황을 연습할까요?', style: Theme.of(context).textTheme.headlineSmall),
+            ),
+            if (isAdmin) ...[
+              FilledButton.icon(
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xff146b59),
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  minimumSize: const Size(0, 36),
+                ),
+                onPressed: () => open(const ScenarioForm()),
+                icon: const Icon(Icons.add, size: 16),
+                label: const Text('신규 시나리오 만들기', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
               ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        if (visibleScenarios.isEmpty)
-          const Card(child: ListTile(leading: Icon(Icons.search_off), title: Text('표시할 상황이 없습니다.'), subtitle: Text('다른 업종을 선택해 보세요.'))),
-
-        for (final category in groupedVisibleScenarios.keys) ...[
-          const SizedBox(height: 14),
-          Row(
-            children: [
-              Icon(_industryIcon(category), size: 20, color: const Color(0xff146b59)),
-              const SizedBox(width: 8),
-              Text(
-                '$category (${groupedVisibleScenarios[category]!.length}개)',
-                style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+              const SizedBox(width: 4),
+              IconButton(
+                tooltip: '카테고리 관리 및 삭제',
+                icon: const Icon(Icons.settings_outlined, color: Color(0xff146b59)),
+                onPressed: _showManageCategoriesDialog,
               ),
             ],
-          ),
-          const SizedBox(height: 6),
-          for (final s in groupedVisibleScenarios[category]!) ...[
-            Builder(
-              builder: (context) {
-                final isNew = dataService.isScenarioNew(s.id);
-                return Card(
-                  child: ListTile(
-                    minVerticalPadding: 16,
-                    leading: Stack(
-                      clipBehavior: Clip.none,
-                      children: [
-                        CircleAvatar(child: Icon(_industryIcon(s.industry))),
-                        if (isNew)
-                          const Positioned(
-                            right: -2,
-                            top: -2,
-                            child: CircleAvatar(
-                              radius: 4.5,
-                              backgroundColor: Colors.red,
-                            ),
-                          ),
-                      ],
-                    ),
-                    title: Text(s.title, style: const TextStyle(fontWeight: FontWeight.w600)),
-                    subtitle: Padding(
-                      padding: const EdgeInsets.only(top: 5),
-                      child: Text(s.situation, maxLines: 2, overflow: TextOverflow.ellipsis),
-                    ),
-                    trailing: const Icon(Icons.chevron_right),
-                    onTap: () {
-                      dataService.markScenarioAsRead(s.id);
-                      startPractice(s);
-                    },
-                  ),
-                );
-              },
-            ),
           ],
-        ],
+        ),
+        const SizedBox(height: 4),
+        Text(
+          isAdmin
+              ? '상황극을 직접 생성/수정/삭제하거나 카테고리를 관리할 수 있습니다.'
+              : '업무 카테고리를 선택하거나 아래 카테고리별 실전 상황극을 둘러보세요.',
+          style: const TextStyle(fontSize: 13, color: Colors.grey),
+        ),
+        const SizedBox(height: 14),
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: [
+              ChoiceChip(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                selectedColor: const Color(0xff146b59),
+                backgroundColor: Colors.grey.shade100,
+                side: BorderSide(color: selectedCategory == '전체' ? const Color(0xff146b59) : Colors.grey.shade300),
+                label: Text('전체', style: TextStyle(color: selectedCategory == '전체' ? Colors.white : Colors.black87, fontWeight: FontWeight.bold, fontSize: 13)),
+                selected: selectedCategory == '전체',
+                onSelected: (_) => setState(() => selectedCategory = '전체'),
+              ),
+              const SizedBox(width: 6),
+              for (final cat in dataService.categories) ...[
+                ChoiceChip(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                  selectedColor: const Color(0xff146b59),
+                  backgroundColor: Colors.grey.shade100,
+                  side: BorderSide(color: selectedCategory == cat ? const Color(0xff146b59) : Colors.grey.shade300),
+                  label: Text(cat, style: TextStyle(color: selectedCategory == cat ? Colors.white : Colors.black87, fontWeight: FontWeight.bold, fontSize: 13)),
+                  selected: selectedCategory == cat,
+                  onSelected: (_) => setState(() => selectedCategory = cat),
+                ),
+                const SizedBox(width: 6),
+              ],
+              if (isAdmin)
+                ActionChip(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  avatar: const Icon(Icons.add_circle_outline, size: 16, color: Color(0xff146b59)),
+                  label: const Text('카테고리 추가', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xff146b59))),
+                  backgroundColor: Colors.teal.shade50,
+                  side: BorderSide(color: const Color(0xff146b59).withValues(alpha: 0.3)),
+                  onPressed: _showAddCategoryDialog,
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 14),
+
+        if (visibleScenarios.isEmpty)
+          const Card(child: ListTile(leading: Icon(Icons.search_off), title: Text('선택한 카테고리에 해당되는 상황극이 없습니다.')))
+        else
+          for (final catName in groupedVisibleScenarios.keys) ...[
+            const SizedBox(height: 14),
+            Row(
+              children: [
+                Icon(_categoryIcon(catName), size: 20, color: const Color(0xff146b59)),
+                const SizedBox(width: 8),
+                Text(
+                  '$catName (${groupedVisibleScenarios[catName]!.length}개)',
+                  style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            for (final s in groupedVisibleScenarios[catName]!) ...[
+              Builder(
+                builder: (context) {
+                  final isNew = dataService.isScenarioNew(s.id);
+                  return Card(
+                    child: ListTile(
+                      minVerticalPadding: 16,
+                      title: Row(
+                        children: [
+                          Expanded(
+                            child: Text(s.title, style: const TextStyle(fontWeight: FontWeight.w600)),
+                          ),
+                          if (!s.isPublished) ...[
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: Colors.orange.shade700,
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: const Text('초안', style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+                            ),
+                          ],
+                          if (isNew) ...[
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: Colors.red.shade600,
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: const Text(
+                                'NEW',
+                                style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                      subtitle: Padding(
+                        padding: const EdgeInsets.only(top: 5),
+                        child: Text(s.situation, maxLines: 2, overflow: TextOverflow.ellipsis),
+                      ),
+                      trailing: isAdmin
+                          ? PopupMenuButton<String>(
+                              icon: const Icon(Icons.more_vert),
+                              tooltip: '시나리오 직접 관리',
+                              onSelected: (action) async {
+                                if (action == 'edit') {
+                                  open(ScenarioForm(existing: s));
+                                } else if (action == 'toggle') {
+                                  dataService.toggleScenarioPublished(
+                                    s.id,
+                                    token: authService.accessToken,
+                                    baseUrl: authService.baseUrl,
+                                  );
+                                } else if (action == 'delete') {
+                                  final confirm = await showDialog<bool>(
+                                    context: context,
+                                    builder: (ctx) => AlertDialog(
+                                      title: const Text('시나리오 삭제'),
+                                      content: Text('[${s.title}] 시나리오를 정말로 삭제하시겠습니까?\n모든 유저 화면에서도 즉시 제거됩니다.'),
+                                      actions: [
+                                        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('취소')),
+                                        FilledButton(style: FilledButton.styleFrom(backgroundColor: Colors.red), onPressed: () => Navigator.pop(ctx, true), child: const Text('삭제')),
+                                      ],
+                                    ),
+                                  );
+                                  if (confirm == true) {
+                                    dataService.removeScenario(
+                                      s.id,
+                                      token: authService.accessToken,
+                                      baseUrl: authService.baseUrl,
+                                    );
+                                  }
+                                }
+                              },
+                              itemBuilder: (context) => [
+                                const PopupMenuItem(value: 'edit', child: Row(children: [Icon(Icons.edit_outlined, size: 18), SizedBox(width: 8), Text('시나리오 수정')])),
+                                PopupMenuItem(
+                                  value: 'toggle',
+                                  child: Row(
+                                    children: [
+                                      Icon(s.isPublished ? Icons.visibility_off_outlined : Icons.visibility_outlined, size: 18),
+                                      const SizedBox(width: 8),
+                                      Text(s.isPublished ? '초안으로 전환' : '즉시 공개하기'),
+                                    ],
+                                  ),
+                                ),
+                                const PopupMenuItem(value: 'delete', child: Row(children: [Icon(Icons.delete_outline, color: Colors.red, size: 18), SizedBox(width: 8), Text('시나리오 삭제', style: TextStyle(color: Colors.red))])),
+                              ],
+                            )
+                          : const Icon(Icons.chevron_right),
+                      onTap: () {
+                        dataService.markScenarioAsRead(s.id);
+                        startPractice(s);
+                      },
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 6),
+            ],
+          ],
       ],
 
       // 2번 탭: 교육 리포트 대시보드
@@ -573,51 +818,16 @@ class _DashboardState extends ConsumerState<Dashboard> {
         panel('현장 사례 등록', '실제 매장에서 일어난 응대 사례를 등록합니다.', Icons.note_add, () => open(const CaseForm())),
       ],
 
-      // 4번 탭: 관리자 전용 대시보드 (서브탭 구분: 0:시나리오 관리 / 1:사례 검토 및 변환 / 2:유저 관리)
+      // 4번 탭: 관리자 전용 대시보드 (서브탭 구분: 0:사례 검토 및 변환 / 1:유저 회원 관리)
       [
         _buildAdminSubTabBar(dataService),
         const SizedBox(height: 18),
 
         if (adminSubTab == 0) ...[
-          // 서브 탭 0: 카테고리별 시나리오 수정 및 신규 등록 관리
-          const Text('상황극 시나리오를 새로 만들어 등록하거나 카테고리별 기존 시나리오를 수정/삭제합니다.', style: TextStyle(color: Colors.grey)),
-          const SizedBox(height: 12),
-          FilledButton.icon(
-            onPressed: () => open(const ScenarioForm()),
-            icon: const Icon(Icons.add),
-            label: const Text('신규 시나리오 직접 만들기'),
-          ),
-          const SizedBox(height: 16),
-          Text('등록된 시나리오 목록 (${dataService.scenarioStore.length}개)', style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 8),
-
-          for (final category in groupedAdminScenarios.keys) ...[
-            const SizedBox(height: 14),
-            Row(
-              children: [
-                Icon(_industryIcon(category), size: 20, color: const Color(0xff146b59)),
-                const SizedBox(width: 8),
-                Text(
-                  '$category 카테고리 (${groupedAdminScenarios[category]!.length}개)',
-                  style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
-                ),
-              ],
-            ),
-            const SizedBox(height: 6),
-            for (final s in groupedAdminScenarios[category]!)
-              _adminScenarioCard(s, dataService, authService),
-          ],
-
-          if (drafts.isNotEmpty)
-            const Padding(
-              padding: EdgeInsets.only(top: 12),
-              child: Text('💡 초안 시나리오는 관리자 목록에만 표시되며 일반 연습 목록에는 나타나지 않습니다.'),
-            ),
-        ] else if (adminSubTab == 1) ...[
-          // 서브 탭 1: 제출된 현장 사례 검토 및 시나리오 변환 (삭제 & 시나리오 추가만 지원)
+          // 서브 탭 0: 제출된 현장 사례 검토 및 시나리오 변환 (삭제 & 시나리오 추가만 지원)
           _buildAdminCaseReviewSection(dataService),
         ] else ...[
-          // 서브 탭 2: 유저 회원 및 진행 데이터 상세 관리
+          // 서브 탭 1: 유저 회원 및 진행 데이터 상세 관리
           _buildUserManagementSection(authService),
         ],
       ],
@@ -1278,21 +1488,7 @@ class _DashboardState extends ConsumerState<Dashboard> {
 
   List<Widget> _buildReportDashboard(DataService dataService) {
     final grouped = dataService.groupedReports;
-    
-    // 업종별 필터링
-    final scenarioIds = grouped.keys.where((scenarioId) {
-      if (selectedReportIndustry == '전체') return true;
-      final reports = grouped[scenarioId]!;
-      return reports.isNotEmpty && reports.first.industry == selectedReportIndustry;
-    }).toList();
-
-    // 카테고리/업종별 시나리오 리포트 그룹화 Map
-    final Map<String, List<String>> groupedByIndustry = {};
-    for (final scenarioId in scenarioIds) {
-      final reports = grouped[scenarioId]!;
-      final industryName = reports.isNotEmpty ? reports.first.industry : '기타';
-      groupedByIndustry.putIfAbsent(industryName, () => []).add(scenarioId);
-    }
+    final scenarioIds = grouped.keys.toList();
 
     return [
       Text('교육 리포트 대시보드', style: Theme.of(context).textTheme.headlineSmall),
@@ -1306,19 +1502,6 @@ class _DashboardState extends ConsumerState<Dashboard> {
         const SizedBox(height: 16),
       ],
 
-      Wrap(
-        spacing: 8,
-        runSpacing: 4,
-        children: [
-          for (final industry in ['전체', '카페', '편의점', '식당'])
-            ChoiceChip(
-              label: Text(industry),
-              selected: selectedReportIndustry == industry,
-              onSelected: (_) => setState(() => selectedReportIndustry = industry),
-            ),
-        ],
-      ),
-      const SizedBox(height: 16),
       if (scenarioIds.isEmpty)
         Card(
           child: Padding(
@@ -1327,7 +1510,7 @@ class _DashboardState extends ConsumerState<Dashboard> {
               children: [
                 const Icon(Icons.assignment_late_outlined, size: 48, color: Colors.grey),
                 const SizedBox(height: 12),
-                const Text('해당 업종의 완료된 상황극 연습이 없습니다.', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                const Text('완료된 상황극 연습이 없습니다.', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 8),
                 const Text('상황극 탭으로 이동하여 실제 연습을 진행해 보세요!', style: TextStyle(color: Colors.grey)),
                 const SizedBox(height: 16),
@@ -1341,24 +1524,10 @@ class _DashboardState extends ConsumerState<Dashboard> {
           ),
         )
       else
-        for (final category in groupedByIndustry.keys) ...[
-          const SizedBox(height: 14),
-          Row(
-            children: [
-              Icon(_industryIcon(category), size: 20, color: const Color(0xff146b59)),
-              const SizedBox(width: 8),
-              Text(
-                '$category 리포트 (${groupedByIndustry[category]!.length}개)',
-                style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
-              ),
-            ],
-          ),
+        for (final scenarioId in scenarioIds) ...[
+          _buildScenarioReportSummaryCard(dataService, scenarioId),
           const SizedBox(height: 8),
-          for (final scenarioId in groupedByIndustry[category]!) ...[
-            _buildScenarioReportSummaryCard(dataService, scenarioId),
-            const SizedBox(height: 8),
-          ]
-        ]
+        ],
     ];
   }
 
@@ -1377,7 +1546,7 @@ class _DashboardState extends ConsumerState<Dashboard> {
           children: [
             CircleAvatar(
               backgroundColor: _scoreColor(latestReport.score).withValues(alpha: 0.15),
-              child: Icon(_industryIcon(latestReport.industry), color: _scoreColor(latestReport.score)),
+              child: Icon(Icons.analytics_outlined, color: _scoreColor(latestReport.score)),
             ),
             if (isUnread)
               const Positioned(
@@ -1390,7 +1559,7 @@ class _DashboardState extends ConsumerState<Dashboard> {
               ),
           ],
         ),
-        title: Text('${latestReport.industry} · ${latestReport.scenarioTitle}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+        title: Text(latestReport.scenarioTitle, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
         subtitle: Padding(
           padding: const EdgeInsets.only(top: 6.0),
           child: Column(
@@ -1455,17 +1624,20 @@ class _DashboardState extends ConsumerState<Dashboard> {
     return Colors.orange.shade700;
   }
 
-  IconData _industryIcon(String industry) => switch (industry) {
-    '카페' => Icons.local_cafe_outlined,
-    '편의점' => Icons.storefront_outlined,
-    '식당' => Icons.restaurant_outlined,
+  IconData _categoryIcon(String category) => switch (category) {
+    '음료/메뉴' => Icons.local_cafe_outlined,
+    '고객 서비스' => Icons.sentiment_satisfied_alt_outlined,
+    '안전/비상대응' => Icons.health_and_safety_outlined,
+    '위생/식품안전' => Icons.sanitizer_outlined,
+    'POS/금전정산' => Icons.point_of_sale_outlined,
+    '시설/장비관리' => Icons.build_circle_outlined,
     _ => Icons.work_outline,
   };
 
   Widget _adminScenarioCard(RoleplayScenario scenario, DataService dataService, AuthService authService) => Card(
     child: ListTile(
       leading: Icon(scenario.isPublished ? Icons.public : Icons.edit_note),
-      title: Text('${scenario.industry} · ${scenario.title}'),
+      title: Text(scenario.title),
       subtitle: Text('${scenario.isPublished ? '공개' : '초안'} · ${scenario.situation}', maxLines: 2, overflow: TextOverflow.ellipsis),
       onTap: () => open(ScenarioForm(existing: scenario)),
       trailing: PopupMenuButton<String>(

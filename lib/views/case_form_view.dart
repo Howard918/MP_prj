@@ -86,13 +86,6 @@ class _CaseFormState extends ConsumerState<CaseForm> {
                 style: TextStyle(color: Colors.grey, fontSize: 14),
               ),
               const SizedBox(height: 20),
-              DropdownButtonFormField<String>(
-                initialValue: selectedIndustry,
-                decoration: const InputDecoration(labelText: '업종 구분', border: OutlineInputBorder()),
-                items: industries.map((v) => DropdownMenuItem(value: v, child: Text(v))).toList(),
-                onChanged: (v) => setState(() => selectedIndustry = v ?? selectedIndustry),
-              ),
-              const SizedBox(height: 14),
               TextFormField(
                 controller: titleController,
                 validator: (v) => v == null || v.trim().isEmpty ? '상황 제목을 입력하세요.' : null,

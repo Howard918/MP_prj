@@ -75,10 +75,10 @@ class ServerConnectionHandler {
     );
   }
 
-  static Future<bool> _checkServerAliveDirect() async {
+  static Future<bool> _checkServerAliveDirect([String? baseUrl]) async {
     try {
-      // 에뮬레이터/실기기 공통 서버 주소 직접 타격 테스트
-      final response = await http.get(Uri.parse('http://10.0.2.2:8000/')).timeout(const Duration(seconds: 3));
+      final targetUrl = (baseUrl != null && baseUrl.isNotEmpty) ? baseUrl : 'http://10.0.2.2:8000';
+      final response = await http.get(Uri.parse('$targetUrl/')).timeout(const Duration(seconds: 3));
       if (response.statusCode == 200) return true;
     } catch (_) {}
     return false;

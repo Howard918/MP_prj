@@ -12,7 +12,7 @@ class User(Base):
     name = Column(String, nullable=False)
     role = Column(String, default="user", nullable=False)  # "user" 또는 "admin"
     total_sessions = Column(Integer, default=0, nullable=False)
-    weakness_categories = Column(JSON, default=list, nullable=True)  # 예: ["주문 재료 품절 대응", "환불 안내"]
+    weakness_categories = Column(JSON, default=list, nullable=True)  # 취약 응대 항목 목록 (예: ["주문 재료 품절 대응", "환불 안내"])
     average_score = Column(Float, default=0.0, nullable=False)
     current_device_id = Column(String, nullable=True) # 다중 기기 중복 로그인 방지용 디바이스 식별자
     pending_device_id = Column(String, nullable=True) # 해제 대기 후 진입할 새 기기 식별자
@@ -26,7 +26,8 @@ class PracticeReportModel(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     scenario_id = Column(String, nullable=False)
     scenario_title = Column(String, nullable=False)
-    industry = Column(String, nullable=False)
+    category = Column(String, default="고객 서비스", nullable=True) # 상황극 카테고리 (음료/메뉴, 고객 서비스, 안전/비상대응 등)
+    industry = Column(String, default="매장 운영", nullable=True)
     date_time = Column(DateTime, default=datetime.utcnow, nullable=False)
     score = Column(Integer, nullable=False)
     feedback = Column(String, nullable=False)
@@ -39,7 +40,8 @@ class ScenarioModel(Base):
     __tablename__ = "scenarios"
 
     id = Column(String, primary_key=True, index=True)
-    industry = Column(String, nullable=False)
+    category = Column(String, default="고객 서비스", nullable=True) # 상황극 카테고리 (음료/메뉴, 고객 서비스, 안전/비상대응 등)
+    industry = Column(String, default="매장 운영", nullable=True)
     title = Column(String, nullable=False)
     situation = Column(String, nullable=False)
     expected_actions = Column(String, nullable=False)
@@ -54,7 +56,8 @@ class FieldCaseModel(Base):
     id = Column(String, primary_key=True, index=True)
     author_id = Column(String, nullable=False)
     author_name = Column(String, nullable=False)
-    industry = Column(String, nullable=False)
+    category = Column(String, default="고객 서비스", nullable=True) # 사례 카테고리
+    industry = Column(String, default="매장 운영", nullable=True)
     title = Column(String, nullable=False)
     situation = Column(String, nullable=False)
     response_details = Column(String, nullable=False)
@@ -71,3 +74,10 @@ class ReferenceModel(Base):
     kind = Column(String, nullable=False)
     scope = Column(String, nullable=False)
     url = Column(String, default="", nullable=False)
+
+class CategoryModel(Base):
+    __tablename__ = "categories"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    name = Column(String, unique=True, index=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

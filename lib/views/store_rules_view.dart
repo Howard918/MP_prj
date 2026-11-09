@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../services/auth_service.dart';
 import '../services/data_service.dart';
 import '../utils/ui_helpers.dart';
 import 'document_preview_view.dart';
@@ -9,77 +10,127 @@ class StoreRulesView extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final categories = [
-      {
-        'title': '카페 매장 매뉴얼',
-        'industry': '카페',
-        'docId': 'cafe',
-        'desc': '카페 매장 운영 지침, 음료 제조 및 고객 응대 수칙',
-        'icon': Icons.local_cafe_outlined,
-      },
-      {
-        'title': '편의점 매장 매뉴얼',
-        'industry': '편의점',
-        'docId': 'convenience_store',
-        'desc': '편의점 수습생 가이드, 연령 확인, POS 및 상품 관리 수칙',
-        'icon': Icons.storefront_outlined,
-      },
-      {
-        'title': '식당 매장 매뉴얼',
-        'industry': '식당',
-        'docId': 'restaurant',
-        'desc': '식당 홀/주방 위생, 알레르기 안내 및 안전 응대 수칙',
-        'icon': Icons.restaurant_outlined,
-      },
-    ];
+    final dataService = ref.watch(dataServiceProvider);
+    final docs = dataService.manualDocs;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('매장 운영규칙')),
+      appBar: AppBar(title: const Text('매장 운영규칙 & 매뉴얼')),
       body: content(
         [
-          const Text('원하는 매장 카테고리를 터치하면 PDF 매뉴얼 문서로 즉시 이동합니다.'),
+          Text(
+            docs.isNotEmpty
+                ? '현재 매장(backend/doc/)에 등록된 총 ${docs.length}개의 매뉴얼 문서를 확인하세요.'
+                : '현재 매장에 등록된 운영 매뉴얼 문서를 불러오는 중입니다.',
+            style: const TextStyle(fontSize: 14, color: Colors.grey),
+          ),
           const SizedBox(height: 16),
-          for (final cat in categories) ...[
+          if (docs.isEmpty)
             Card(
               child: ListTile(
-                contentPadding: const EdgeInsets.all(16),
-                leading: CircleAvatar(
-                  backgroundColor: const Color(0xff146b59).withValues(alpha: 0.1),
-                  child: Icon(cat['icon'] as IconData, color: const Color(0xff146b59)),
+                contentPadding: const EdgeInsets.all(18),
+                leading: const Icon(Icons.description_outlined, color: Colors.grey, size: 28),
+                title: const Text('등록된 매장 매뉴얼 문서가 없습니다.', style: TextStyle(fontWeight: FontWeight.bold)),
+                subtitle: const Text('backend/doc/ 경로에 .docx 매뉴얼 파일을 배치해 주세요.'),
+                trailing: IconButton(
+                  icon: const Icon(Icons.refresh),
+                  onPressed: () {
+                    final authService = ref.read(authServiceProvider);
+                    ref.read(dataServiceProvider).refreshData(
+                          token: authService.accessToken,
+                          baseUrl: authService.baseUrl,
+                        );
+                  },
                 ),
-                title: Text(
-                  cat['title'] as String,
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                ),
-                subtitle: Padding(
-                  padding: const EdgeInsets.only(top: 6.0),
-                  child: Text(
-                    cat['desc'] as String,
-                    style: const TextStyle(fontSize: 13, color: Colors.grey),
+              ),
+            )
+          else
+            for (int i = 0; i < docs.length; i++) ...[
+              Card(
+                elevation: 2.5,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                child: Padding(
+                  padding: const EdgeInsets.all(18.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          CircleAvatar(
+                            backgroundColor: const Color(0xff146b59).withValues(alpha: 0.1),
+                            child: Text(
+                              '${i + 1}',
+                              style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xff146b59)),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              docs[i]['title'] ?? '매장 운영 매뉴얼',
+                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16.5),
+                            ),
+                          ),
+                          const Chip(
+                            label: Text('PDF 미리보기', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white)),
+                            backgroundColor: Color(0xff146b59),
+                            visualDensity: VisualDensity.compact,
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      Row(
+                        children: [
+                          const Icon(Icons.insert_drive_file_outlined, size: 14, color: Colors.grey),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Text(
+                              '원본 파일: ${docs[i]['filename']}',
+                              style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 14),
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton.icon(
+                          style: FilledButton.styleFrom(
+                            backgroundColor: const Color(0xff146b59),
+                            padding: const EdgeInsets.symmetric(vertical: 11),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          ),
+                          icon: const Icon(Icons.picture_as_pdf_rounded, size: 18),
+                          label: Text(
+                            '${docs[i]['title']} PDF 열람',
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5),
+                          ),
+                          onPressed: () {
+                            Navigator.push(
+                              context,
+                              PageRouteBuilder<void>(
+                                transitionDuration: Duration.zero,
+                                reverseTransitionDuration: Duration.zero,
+                                pageBuilder: (context, animation, secondaryAnimation) => DocumentPreviewScreen(
+                                  docId: docs[i]['doc_id']!,
+                                  title: docs[i]['title']!,
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                trailing: const Icon(Icons.picture_as_pdf_rounded, color: Colors.redAccent),
-                onTap: () {
-                  // 💡 PDF 미리보기 진입 및 뒤로가기 시 애니메이션 딜레이로 인한 지연/오류 방지 (Duration.zero)
-                  Navigator.push(
-                    context,
-                    PageRouteBuilder<void>(
-                      transitionDuration: Duration.zero,
-                      reverseTransitionDuration: Duration.zero,
-                      pageBuilder: (context, animation, secondaryAnimation) => DocumentPreviewScreen(
-                        docId: cat['docId'] as String,
-                        title: cat['title'] as String,
-                      ),
-                    ),
-                  );
-                },
               ),
-            ),
-            const SizedBox(height: 8),
-          ],
+              const SizedBox(height: 10),
+            ],
         ],
         onRefresh: () async {
-          await ref.read(dataServiceProvider).refreshData();
+          final authService = ref.read(authServiceProvider);
+          await ref.read(dataServiceProvider).refreshData(
+                token: authService.accessToken,
+                baseUrl: authService.baseUrl,
+              );
         },
       ),
     );

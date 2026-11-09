@@ -22,11 +22,18 @@ class _ScenarioFormState extends ConsumerState<ScenarioForm> {
   late TextEditingController mandatoryActions;
   late TextEditingController optionalActions;
   late TextEditingController rules;
-  late String industry;
+  late String category;
   late bool published;
   Set<String> selectedReferences = {};
 
-  final industries = ['카페', '편의점', '식당'];
+  final categories = [
+    '음료/메뉴',
+    '고객 서비스',
+    '안전/비상대응',
+    '위생/식품안전',
+    'POS/금전정산',
+    '시설/장비관리',
+  ];
 
   @override
   void initState() {
@@ -39,7 +46,7 @@ class _ScenarioFormState extends ConsumerState<ScenarioForm> {
     mandatoryActions = TextEditingController(text: s?.mandatoryActions ?? c?.responseDetails ?? '');
     optionalActions = TextEditingController(text: s?.optionalActions ?? '정중하고 신속한 고객 케어 및 안내');
     rules = TextEditingController(text: s?.linkedRules ?? '');
-    industry = s?.industry ?? c?.industry ?? industries.first;
+    category = s?.category ?? c?.category ?? categories.first;
     published = s?.isPublished ?? true; // 사례 변환 시 기본 공개
     selectedReferences = {...?s?.referenceCodes};
   }
@@ -82,7 +89,7 @@ class _ScenarioFormState extends ConsumerState<ScenarioForm> {
     if (widget.existing != null) {
       final updatedScenario = RoleplayScenario(
         id: widget.existing!.id,
-        industry: industry,
+        category: category,
         title: title.text.trim(),
         situation: situation.text.trim(),
         expectedActions: combinedActions,
@@ -95,7 +102,7 @@ class _ScenarioFormState extends ConsumerState<ScenarioForm> {
     } else {
       final scenario = RoleplayScenario(
         id: DateTime.now().microsecondsSinceEpoch.toString(),
-        industry: industry,
+        category: category,
         title: title.text.trim(),
         situation: situation.text.trim(),
         expectedActions: combinedActions,
@@ -158,13 +165,13 @@ class _ScenarioFormState extends ConsumerState<ScenarioForm> {
             ],
 
             DropdownButtonFormField<String>(
-              value: industry,
-              decoration: const InputDecoration(labelText: '업종 카테고리', border: OutlineInputBorder()),
-              items: industries.map((i) => DropdownMenuItem(value: i, child: Text(i))).toList(),
+              value: dataService.categories.contains(category) ? category : (dataService.categories.isNotEmpty ? dataService.categories.first : '고객 서비스'),
+              decoration: const InputDecoration(labelText: '업무 카테고리 선택', border: OutlineInputBorder()),
+              items: dataService.categories.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
               onChanged: (val) {
                 if (val != null) {
                   setState(() {
-                    industry = val;
+                    category = val;
                   });
                 }
               },
@@ -226,7 +233,7 @@ class _ScenarioFormState extends ConsumerState<ScenarioForm> {
               maxLines: 3,
               decoration: const InputDecoration(
                 labelText: '연결된 매장 운영규칙 (선택)',
-                hintText: '예: 카페 매장 매뉴얼 - 4. 돌발 상황 및 컴플레인 대처',
+                hintText: '예: 01_운영총칙 - 4. 돌발 상황 및 컴플레인 대처',
                 border: OutlineInputBorder(),
               ),
             ),

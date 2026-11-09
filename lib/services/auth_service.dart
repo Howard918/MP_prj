@@ -54,22 +54,31 @@ class AuthService extends ChangeNotifier with WidgetsBindingObserver {
     super.dispose();
   }
 
-  // 💡 백그라운드 복귀 감지 시 세션 정황 1회 즉시 검증
+  int _consecutiveFailures = 0;
+
+  // 💡 백그라운드 복귀 라이프사이클 감지
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed && currentUser != null && accessToken != null) {
-      Future.delayed(const Duration(milliseconds: 1200), () {
+      Future.delayed(const Duration(milliseconds: 1200), () async {
         if (currentUser != null && accessToken != null) {
-          _checkHeartbeat();
+          final isAlive = await checkServerHealth();
+          if (!isAlive && currentUser != null) {
+            stopHeartbeatCheck();
+            ServerConnectionHandler.handleDisconnection('백엔드 서버와의 연결이 중단되었습니다.\n서버 작동 상태를 확인 후 다시 로그인해 주세요.', true);
+          } else {
+            await _checkHeartbeat();
+          }
         }
       });
     }
   }
 
-  // 🔴 경량 기기 세션 헬스체크 (1초 주기로 빠른 수신 -> 기존 기기 1초 만에 즉시 알림 팝업 수신 보장)
+  // 🔴 경량 기기 세션 헬스체크 (2초 주기 하트비트 -> 중복 로그인 2초 이내 및 서버 종료 연속 2회 즉시 끊김 처리)
   void startHeartbeatCheck() {
     stopHeartbeatCheck();
-    _heartbeatTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
+    _consecutiveFailures = 0;
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
       if (currentUser == null || accessToken == null) {
         stopHeartbeatCheck();
         return;
@@ -81,9 +90,10 @@ class AuthService extends ChangeNotifier with WidgetsBindingObserver {
   void stopHeartbeatCheck() {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
+    _consecutiveFailures = 0;
   }
 
-  // 💡 경량 하트비트: 데이터 패치 없이 세션 무효화(409) / 토큰 만료(401)만 체킹
+  // 💡 경량 하트비트: 세션 무효화(409), 토큰 만료(401), 서버 종료(연속 2회 실패) 즉각 탐지
   Future<void> _checkHeartbeat() async {
     if (currentUser == null || accessToken == null) return;
     try {
@@ -97,20 +107,32 @@ class AuthService extends ChangeNotifier with WidgetsBindingObserver {
       ).timeout(const Duration(seconds: 3));
 
       if (response.statusCode == 200) {
+        _consecutiveFailures = 0; // 정상 통신 확인 시 실패 카운터 초기화
         final userData = jsonDecode(utf8.decode(response.bodyBytes));
         currentUser = UserModel.fromJson(userData);
         notifyListeners();
+        return;
       } else if (response.statusCode == 409 && currentUser != null) {
-        // 🔒 다른 기기에서 중복 로그인 감지 시 기존 기기 세션 즉시 해제! (isSessionRevoked 플래그 true 전달)
+        // 🔒 다른 기기에서 중복 로그인 감지 시 기존 기기 세션 즉시 해제!
         stopHeartbeatCheck();
         ServerConnectionHandler.handleDisconnection('다른 기기에서 동일한 계정으로 새로 로그인되었습니다.\n현재 기기에서의 접속이 해제됩니다.', true);
+        return;
       } else if (response.statusCode == 401 && currentUser != null) {
         stopHeartbeatCheck();
         ServerConnectionHandler.handleDisconnection('인증 세션이 만료되었습니다.\n다시 로그인해 주세요.', true);
+        return;
+      } else {
+        _consecutiveFailures++;
       }
     } catch (e) {
-      // 소켓 연결 지연이나 일시적 네트워크 예외 시 무음 처리 (가짜 연결 끊김 팝업 방지)
-      debugPrint('하트비트 통신 예외 무음 처리: $e');
+      _consecutiveFailures++;
+      debugPrint('하트비트 연결 점검 실패 (연속 $_consecutiveFailures회): $e');
+    }
+
+    // 💡 서버 가동이 완전히 중단되었거나 2회 연속 연결 실패 시 즉시 해제 알림 팝업 및 로그아웃
+    if (_consecutiveFailures >= 2 && currentUser != null) {
+      stopHeartbeatCheck();
+      ServerConnectionHandler.handleDisconnection('백엔드 서버와의 연결이 중단되었습니다.\n서버 작동 상태를 확인 후 다시 로그인해 주세요.', true);
     }
   }
 

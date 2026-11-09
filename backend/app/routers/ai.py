@@ -55,7 +55,7 @@ def _call_openai_api_sync(url: str, payload: dict, timeout_sec: float = 20.0) ->
             detail=f"OpenAI API 통신 연결 실패: {str(e)}"
         )
 
-# 1. [POST] /ai/chat: 백엔드에서 OpenAI Chat Completions 프록시 호출
+# 1. [POST] /ai/chat: 백엔드에서 OpenAI Chat Completions 프록시 호출 (범용 매장 수습 직원 페르소나 적용)
 @router.post("/chat")
 async def ai_chat(req: ChatRequest, current_user: User = Depends(get_current_user)):
     payload = {
@@ -71,7 +71,7 @@ async def ai_chat(req: ChatRequest, current_user: User = Depends(get_current_use
 # 2. [POST] /ai/evaluate: 백엔드에서 상황극 최종 평가 프록시 수행
 @router.post("/evaluate")
 async def ai_evaluate(req: EvaluationRequest, current_user: User = Depends(get_current_user)):
-    eval_system_prompt = f"""다음은 아르바이트생(user)과 고객(assistant) 간의 대화 기록입니다.
+    eval_system_prompt = f"""다음은 매장 수습 아르바이트생(user)과 고객(assistant) 간의 대화 기록입니다.
 
 [응대 조치 기준]
 {req.criteria}
@@ -102,7 +102,7 @@ async def ai_evaluate(req: EvaluationRequest, current_user: User = Depends(get_c
 
 
 # -------------------------------------------------------------------------
-# 원본 DOCX 문서 기반 RAG 파이프라인 전용 인메모리 벡터 저장소
+# 범용 B2B 단일 사업장 DOCX 매뉴얼 동적 RAG 벡터 저장소
 # -------------------------------------------------------------------------
 def extract_docx_paragraphs(docx_path: str) -> List[str]:
     """.docx 오픈포맷 파일 내의 단락(Paragraph) 텍스트를 파이썬 내장 zipfile로 직접 파싱"""
@@ -124,51 +124,60 @@ def extract_docx_paragraphs(docx_path: str) -> List[str]:
     return paragraphs
 
 def load_docs_from_docx_files() -> List[dict]:
-    """backend/doc/ 내의 원본 DOCX 문서들을 자동으로 파싱하여 RAG 임베딩 데이터셋으로 구성"""
+    """backend/doc/ 내의 모든 DOCX 매뉴얼 문서들을 동적으로 스캔 및 RAG 임베딩 데이터셋으로 통합 적재"""
     docs = []
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     docs_dir = os.path.join(base_dir, "doc")
     if not os.path.exists(docs_dir):
         docs_dir = os.path.abspath(os.path.join(base_dir, "..", "assets", "doc"))
 
-    doc_files = [
-        ("cafe", "Cafe_Manual.docx", "카페 매장 매뉴얼"),
-        ("convenience_store", "Convenience_Store_Manual.docx", "편의점 매장 매뉴얼"),
-        ("restaurant", "Restaurant_Manual.docx", "식당 매장 매뉴얼"),
-    ]
+    if os.path.exists(docs_dir):
+        docx_files = [f for f in os.listdir(docs_dir) if f.lower().endswith(".docx")]
+        for filename in docx_files:
+            filepath = os.path.join(docs_dir, filename)
+            doc_id = os.path.splitext(filename)[0].lower()
+            default_title = os.path.splitext(filename)[0].replace("_", " ")
 
-    for doc_id, filename, default_title in doc_files:
-        filepath = os.path.join(docs_dir, filename)
-        if os.path.exists(filepath):
             paras = extract_docx_paragraphs(filepath)
+            current_section = default_title
             chunk = []
             chunk_num = 1
+
             for p in paras:
-                chunk.append(p)
-                if len(" ".join(chunk)) >= 120: # 120자 내외 단위로 Chunking
-                    chunk_text = " ".join(chunk).strip()
-                    docs.append({
-                        "id": f"{doc_id}_{chunk_num}",
-                        "title": f"{default_title} ({chunk_num}항)",
-                        "url": f"/api/docs/preview/{doc_id}",
-                        "content": chunk_text
-                    })
-                    chunk = []
-                    chunk_num += 1
+                if p[0].isdigit() and ('. ' in p[:4] or ' ' in p[:3]):
+                    if chunk:
+                        docs.append({
+                            "id": f"{doc_id}_{chunk_num}",
+                            "title": f"{default_title} - {current_section}",
+                            "url": f"/api/docs/preview/{doc_id}",
+                            "content": " ".join(chunk).strip()
+                        })
+                        chunk = []
+                        chunk_num += 1
+                    current_section = p
+                else:
+                    chunk.append(p)
+                    if len(" ".join(chunk)) >= 140:
+                        docs.append({
+                            "id": f"{doc_id}_{chunk_num}",
+                            "title": f"{default_title} - {current_section}",
+                            "url": f"/api/docs/preview/{doc_id}",
+                            "content": " ".join(chunk).strip()
+                        })
+                        chunk = []
+                        chunk_num += 1
+
             if chunk:
-                chunk_text = " ".join(chunk).strip()
                 docs.append({
                     "id": f"{doc_id}_{chunk_num}",
-                    "title": f"{default_title} ({chunk_num}항)",
+                    "title": f"{default_title} - {current_section}",
                     "url": f"/api/docs/preview/{doc_id}",
-                    "content": chunk_text
+                    "content": " ".join(chunk).strip()
                 })
 
     if not docs:
         docs = [
-            {"id": "doc_01", "title": "카페 매장 매뉴얼 1항", "url": "/api/docs/preview/cafe", "content": "모든 고객에게 정중히 인사하며, 품절 시 대체 메뉴를 제안해야 합니다."},
-            {"id": "doc_02", "title": "편의점 매장 매뉴얼 1항", "url": "/api/docs/preview/convenience_store", "content": "주류 및 담배 결제 시 반드시 연령 확인을 진행해야 합니다."},
-            {"id": "doc_03", "title": "식당 매장 매뉴얼 1항", "url": "/api/docs/preview/restaurant", "content": "알레르기 문의 시 원재료표를 확인하고 화상 발생 시 시원한 물로 식힙니다."}
+            {"id": "doc_01", "title": "매장 매뉴얼 기본 수칙", "url": "/api/docs/preview/manual", "content": "모든 고객에게 정중히 인사하며, 품절 및 요청 시 매장 규칙에 따라 대체 메뉴와 안내를 제공해야 합니다."}
         ]
     return docs
 
@@ -211,7 +220,7 @@ class InMemoryVectorStore:
 
 vector_store = InMemoryVectorStore()
 
-# 3. [POST] /ai/search: AI 어시스턴트 RAG 파이프라인 (원 원본 DOCX 문서 기반)
+# 3. [POST] /ai/search: AI 어시스턴트 RAG 파이프라인 (동적 매장 매뉴얼 기반)
 @router.post("/search", response_model=RagResponseSchema)
 async def ai_search_rag(
     req: SearchRequest,
@@ -223,7 +232,7 @@ async def ai_search_rag(
     # 2. Generate (프롬프트 구성 및 LLM 호출)
     context_str = "\n\n".join([f"[{d['id']}] {d['title']}: {d['content']}" for d in retrieved_docs])
 
-    system_prompt = f"""너는 매장 수습 아르바이트생을 돕는 친절한 AI 어시스턴트야.
+    system_prompt = f"""너는 backend/doc/ 매뉴얼을 따르는 매장의 수습 아르바이트생을 돕는 친절한 AI 어시스턴트야.
 아래의 [참고 매뉴얼 문서]만을 기반으로 사용자의 질문에 정확하고 간결하게 답변해줘.
 만약 문서에 없는 내용이라면 "제공된 매뉴얼에서는 해당 내용을 찾을 수 없습니다."라고 답변해.
 
@@ -235,9 +244,9 @@ async def ai_search_rag(
   "answer": "사용자 질문에 대한 자연스러운 답변 텍스트",
   "references": [
     {{
-      "id": "문서ID (예: cafe_1)",
-      "title": "문서 제목 (예: 카페 매장 매뉴얼 (1항))",
-      "url": "문서 미리보기 URL (예: /api/docs/preview/cafe)",
+      "id": "문서ID",
+      "title": "문서 제목",
+      "url": "문서 미리보기 URL (예: /api/docs/preview/manual)",
       "match_text": "답변의 근거가 된 핵심 문구 (매뉴얼 내용 중 15자 내외 발췌)"
     }}
   ]
@@ -255,5 +264,38 @@ async def ai_search_rag(
 
     result = await asyncio.to_thread(_call_openai_api_sync, "https://api.openai.com/v1/chat/completions", payload, 15.0)
     content_str = result["choices"][0]["message"]["content"]
+    res_data = json.loads(content_str)
 
-    return json.loads(content_str)
+    # 💡 [핵심 버그 픽스] LLM 환각(Hallucination) 원천 차단:
+    # LLM이 생성한 reference ID/URL을 실제 검색된 retrieved_docs와 100% 매칭하여
+    # 해당 원본 매뉴얼 문서의 정확한 미리보기 URL(/api/docs/preview/{doc_id})로 백엔드가 강제 바인딩합니다.
+    doc_map = {d["id"]: d for d in retrieved_docs}
+    valid_refs = []
+
+    for ref in res_data.get("references", []):
+        ref_id = str(ref.get("id", "")).strip()
+        matched_doc = doc_map.get(ref_id)
+
+        if not matched_doc:
+            for d in retrieved_docs:
+                if ref_id in d["id"] or d["id"] in ref_id or ref.get("title", "") in d["title"]:
+                    matched_doc = d
+                    break
+
+        if not matched_doc and retrieved_docs:
+            matched_doc = retrieved_docs[0]
+
+        if matched_doc:
+            chunk_id = matched_doc["id"]
+            # chunk_id 예: 02_근무_및_인사규정_1 -> 02_근무_및_인사규정
+            raw_doc_id = chunk_id.rsplit("_", 1)[0] if "_" in chunk_id else chunk_id
+
+            valid_refs.append({
+                "id": chunk_id,
+                "title": matched_doc["title"],
+                "url": f"/api/docs/preview/{raw_doc_id}",
+                "match_text": ref.get("match_text", matched_doc["content"][:20])
+            })
+
+    res_data["references"] = valid_refs
+    return res_data

@@ -4,8 +4,8 @@ from typing import List, Optional
 import uuid
 
 from ..database import get_db
-from ..models import User, ScenarioModel, ReferenceModel
-from ..schemas import ScenarioCreate, ScenarioResponse, OfficialReferenceSchema
+from ..models import User, ScenarioModel, ReferenceModel, CategoryModel
+from ..schemas import ScenarioCreate, ScenarioResponse, OfficialReferenceSchema, CategoryCreate, CategoryResponse
 from ..security import get_current_user, get_current_admin_user
 
 router = APIRouter(prefix="/scenarios", tags=["Scenarios"])
@@ -18,7 +18,7 @@ def get_scenarios(
     scenarios = db.query(ScenarioModel).all()
     return scenarios
 
-# 2. [POST] /scenarios: 신규 시나리오 생성 (관리자 전용)
+# 2. [POST] /scenarios: 신규 시나리오 생성 (관리자 전용, 카테고리 지정)
 @router.post("", response_model=ScenarioResponse, status_code=status.HTTP_201_CREATED)
 def create_scenario(
     scenario_in: ScenarioCreate,
@@ -29,7 +29,8 @@ def create_scenario(
 
     new_scenario = ScenarioModel(
         id=scenario_id,
-        industry=scenario_in.industry,
+        category=scenario_in.category if scenario_in.category else "고객 서비스",
+        industry=scenario_in.industry if scenario_in.industry else "매장 운영",
         title=scenario_in.title,
         situation=scenario_in.situation,
         expected_actions=scenario_in.expected_actions,
@@ -55,7 +56,8 @@ def update_scenario(
     if not scenario:
         scenario = ScenarioModel(id=scenario_id)
 
-    scenario.industry = scenario_in.industry
+    scenario.category = scenario_in.category if scenario_in.category else "고객 서비스"
+    scenario.industry = scenario_in.industry if scenario_in.industry else "매장 운영"
     scenario.title = scenario_in.title
     scenario.situation = scenario_in.situation
     scenario.expected_actions = scenario_in.expected_actions
@@ -87,3 +89,42 @@ def delete_scenario(
 @router.get("/references", response_model=List[OfficialReferenceSchema])
 def get_references(db: Session = Depends(get_db)):
     return db.query(ReferenceModel).all()
+
+# 6. [GET] /scenarios/categories: 전체 동적 카테고리 목록 조회
+@router.get("/categories", response_model=List[CategoryResponse])
+def get_categories(db: Session = Depends(get_db)):
+    return db.query(CategoryModel).order_by(CategoryModel.id.asc()).all()
+
+# 7. [POST] /scenarios/categories: 신규 카테고리 추가 (관리자 전용)
+@router.post("/categories", response_model=CategoryResponse, status_code=status.HTTP_201_CREATED)
+def create_category(
+    cat_in: CategoryCreate,
+    db: Session = Depends(get_db),
+    admin_user: User = Depends(get_current_admin_user)
+):
+    name = cat_in.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="카테고리명을 입력해 주세요.")
+
+    existing = db.query(CategoryModel).filter(CategoryModel.name == name).first()
+    if existing:
+        return existing
+
+    new_cat = CategoryModel(name=name)
+    db.add(new_cat)
+    db.commit()
+    db.refresh(new_cat)
+    return new_cat
+
+# 8. [DELETE] /scenarios/categories/{name}: 기존 카테고리 삭제 (관리자 전용)
+@router.delete("/categories/{name}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_category(
+    name: str,
+    db: Session = Depends(get_db),
+    admin_user: User = Depends(get_current_admin_user)
+):
+    cat = db.query(CategoryModel).filter(CategoryModel.name == name).first()
+    if cat:
+        db.delete(cat)
+        db.commit()
+    return None

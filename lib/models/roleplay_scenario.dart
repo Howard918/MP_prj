@@ -1,7 +1,8 @@
 class RoleplayScenario {
   RoleplayScenario({
     required this.id,
-    required this.industry,
+    this.category = '고객 서비스',
+    this.industry = '매장 운영',
     required this.title,
     required this.situation,
     required this.expectedActions,
@@ -13,7 +14,8 @@ class RoleplayScenario {
   factory RoleplayScenario.fromJson(Map<String, dynamic> json) {
     return RoleplayScenario(
       id: (json['id'] ?? '').toString(),
-      industry: (json['industry'] ?? '').toString(),
+      category: (json['category'] ?? '고객 서비스').toString(),
+      industry: (json['industry'] ?? '매장 운영').toString(),
       title: (json['title'] ?? '').toString(),
       situation: (json['situation'] ?? '').toString(),
       expectedActions: (json['expected_actions'] ?? json['expectedActions'] ?? '').toString(),
@@ -29,6 +31,7 @@ class RoleplayScenario {
   Map<String, dynamic> toJson() {
     return {
       'id': id,
+      'category': category,
       'industry': industry,
       'title': title,
       'situation': situation,
@@ -75,6 +78,7 @@ class RoleplayScenario {
   }
 
   final String id;
+  String category;
   String industry;
   String title;
   String situation;

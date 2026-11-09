@@ -2,6 +2,9 @@ import os
 import sys
 import shutil
 import asyncio
+import zipfile
+import urllib.parse
+import xml.etree.ElementTree as ET
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
@@ -53,7 +56,6 @@ def find_libreoffice_executable() -> Optional[str]:
 
 def render_pdf_with_reportlab(docx_path: str, pdf_path: str):
     """python-docx + reportlab 기반 100% 원본 DOCX -> 고해상도 한글 PDF 변환"""
-    # 폰트 탐색 (Windows 맑은 고딕 우선, 기타 시스템 폰트 폴백)
     font_name = 'Helvetica'
     font_paths = [
         r'C:\Windows\Fonts\malgun.ttf',
@@ -119,7 +121,7 @@ def render_pdf_with_reportlab(docx_path: str, pdf_path: str):
 
         safe_text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
-        if p.style.name.startswith('Heading 1') or '제목' in p.style.name or text.startswith('카페') or text.startswith('편의점') or text.startswith('식당'):
+        if p.style.name.startswith('Heading 1') or '제목' in p.style.name or '매뉴얼' in text:
             story.append(Paragraph(safe_text, title_style))
         elif p.style.name.startswith('Heading') or (text[0].isdigit() and ('. ' in text[:4] or ' ' in text[:3])):
             story.append(Paragraph(safe_text, heading_style))
@@ -132,7 +134,6 @@ def render_pdf_with_reportlab(docx_path: str, pdf_path: str):
 
 async def render_pdf_from_docx(docx_path: str, pdf_path: str, doc_title: str):
     """1차: docx2pdf (MS Word COM) -> 2차: reportlab (python-docx 100% 한글 PDF) -> 3차: LibreOffice"""
-    # 1차 시도: docx2pdf (MS Word COM 변환 - 가장 완벽한 원본 폰트/레이아웃 렌더링)
     if sys.platform == "win32":
         try:
             from docx2pdf import convert
@@ -143,7 +144,6 @@ async def render_pdf_from_docx(docx_path: str, pdf_path: str, doc_title: str):
         except Exception as e:
             print(f"docx2pdf 변환 생략: {e}")
 
-    # 2차 시도: python-docx + reportlab (100% 원본 단락 파싱 한글 PDF 렌더링)
     try:
         await asyncio.to_thread(render_pdf_with_reportlab, docx_path, pdf_path)
         if os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 0:
@@ -152,7 +152,6 @@ async def render_pdf_from_docx(docx_path: str, pdf_path: str, doc_title: str):
     except Exception as e:
         print(f"ReportLab PDF 렌더링 실패: {e}")
 
-    # 3차 시도: LibreOffice --headless
     libreoffice_bin = find_libreoffice_executable()
     if libreoffice_bin:
         try:
@@ -175,49 +174,44 @@ async def render_pdf_from_docx(docx_path: str, pdf_path: str, doc_title: str):
         except Exception as e:
             print(f"LibreOffice 변환 중 예외: {e}")
 
-# 1. [GET] /api/docs/preview/{doc_id}: backend/doc/ 내의 .docx 원본을 PDF로 동적 변환 및 캐싱 서빙
+# 1. [GET] /api/docs/preview/{doc_id}: backend/doc/ 내의 .docx 원본을 PDF로 동적 변환 및 캐싱 서빙 (동적 매뉴얼 검색)
 @router.get("/preview/{doc_id}")
 async def preview_document(
     doc_id: str,
     current_user: User = Depends(get_current_user)
 ):
-    doc_map = {
-        "cafe": "Cafe_Manual.docx",
-        "restaurant": "Restaurant_Manual.docx",
-        "convenience_store": "Convenience_Store_Manual.docx",
-        "cafe_manual": "Cafe_Manual.docx",
-        "restaurant_manual": "Restaurant_Manual.docx",
-        "convenience_store_manual": "Convenience_Store_Manual.docx",
-    }
-
-    clean_id = doc_id.lower().replace(".docx", "").replace(".pdf", "")
-    filename = doc_map.get(clean_id, f"{doc_id}.docx")
-
+    decoded_id = urllib.parse.unquote(doc_id).lower().replace(".docx", "").replace(".pdf", "").strip()
+    clean_id = doc_id.lower().replace(".docx", "").replace(".pdf", "").strip()
     docs_dir = get_docs_dir()
-    docx_path = os.path.join(docs_dir, filename)
 
-    if not os.path.exists(docx_path):
-        # 대소문자 차이나 부분 일치 파일 탐색 (PRIMARY -> SECONDARY 순서)
-        found = False
-        for search_dir in [PRIMARY_DOCS_DIR, SECONDARY_DOCS_DIR]:
-            if os.path.exists(search_dir):
-                for f in os.listdir(search_dir):
-                    if f.lower().startswith(clean_id):
-                        docx_path = os.path.join(search_dir, f)
-                        found = True
+    docx_path = None
+    if os.path.exists(docs_dir):
+        # 1차: 정확한 파일명/ID 완전 대조
+        for f in os.listdir(docs_dir):
+            if f.lower().endswith(".docx"):
+                stem = os.path.splitext(f)[0].lower()
+                if stem == decoded_id or stem == clean_id:
+                    docx_path = os.path.join(docs_dir, f)
+                    break
+
+        # 2차: 파일명 상호 부분 포함 대조
+        if not docx_path:
+            for f in os.listdir(docs_dir):
+                if f.lower().endswith(".docx"):
+                    stem = os.path.splitext(f)[0].lower()
+                    if decoded_id in stem or stem in decoded_id or clean_id in stem or stem in clean_id:
+                        docx_path = os.path.join(docs_dir, f)
                         break
-            if found:
-                break
-        if not found:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"요청한 원본 매뉴얼 문서({doc_id})를 탐색 경로({PRIMARY_DOCS_DIR})에서 찾을 수 없습니다."
-            )
 
-    pdf_filename = f"{clean_id}.pdf"
+    if not docx_path or not os.path.exists(docx_path):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"backend/doc/ 경로에서 요청한 문서({doc_id})에 해당되는 매매뉴얼 원본(.docx)을 찾을 수 없습니다."
+        )
+
+    pdf_filename = f"{os.path.splitext(os.path.basename(docx_path))[0]}.pdf"
     pdf_path = os.path.join(CACHE_DIR, pdf_filename)
 
-    # 이전 예시용 결함 캐시 파일 세척 및 최신 변환
     needs_conversion = True
     if os.path.exists(pdf_path):
         docx_mtime = os.path.getmtime(docx_path)
@@ -231,5 +225,37 @@ async def preview_document(
     return FileResponse(
         path=pdf_path,
         media_type="application/pdf",
-        filename=f"{clean_id}_manual.pdf"
+        filename=os.path.basename(pdf_path)
     )
+
+# 2. [GET] /api/docs/list: backend/doc/ 내의 모든 DOCX/PDF 매뉴얼 문서 목록 동적 수신 (모든 사용자 오픈 수신)
+@router.get("/list")
+async def list_documents():
+    docs_dir = get_docs_dir()
+    result = []
+    if os.path.exists(docs_dir):
+        for filename in sorted(os.listdir(docs_dir)):
+            if filename.lower().endswith((".docx", ".pdf")):
+                doc_id = os.path.splitext(filename)[0].lower()
+                raw_title = os.path.splitext(filename)[0].replace("_", " ")
+
+                title = raw_title
+                filepath = os.path.join(docs_dir, filename)
+                if filename.lower().endswith(".docx"):
+                    try:
+                        doc = Document(filepath)
+                        for p in doc.paragraphs:
+                            t = p.text.strip()
+                            if t and len(t) > 3:
+                                title = t[:45]
+                                break
+                    except Exception:
+                        pass
+
+                result.append({
+                    "doc_id": doc_id,
+                    "title": title,
+                    "filename": filename,
+                    "type": "매뉴얼 PDF 변환 문서"
+                })
+    return result

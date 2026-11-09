@@ -4,6 +4,7 @@ class FieldCase {
   final String id;
   final String authorId;
   final String authorName;
+  final String category;
   final String industry;
   final String title;
   final String situation;
@@ -17,7 +18,8 @@ class FieldCase {
     required this.id,
     required this.authorId,
     required this.authorName,
-    required this.industry,
+    this.category = '고객 서비스',
+    this.industry = '매장 운영',
     required this.title,
     required this.situation,
     required this.responseDetails,
@@ -32,7 +34,8 @@ class FieldCase {
       id: (json['id'] ?? '').toString(),
       authorId: (json['authorId'] ?? 'user').toString(),
       authorName: (json['authorName'] ?? '수습생').toString(),
-      industry: (json['industry'] ?? '카페').toString(),
+      category: (json['category'] ?? '고객 서비스').toString(),
+      industry: (json['industry'] ?? '매장 운영').toString(),
       title: (json['title'] ?? '').toString(),
       situation: (json['situation'] ?? '').toString(),
       responseDetails: (json['responseDetails'] ?? '').toString(),
@@ -56,6 +59,7 @@ class FieldCase {
       'id': id,
       'authorId': authorId,
       'authorName': authorName,
+      'category': category,
       'industry': industry,
       'title': title,
       'situation': situation,

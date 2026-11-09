@@ -17,6 +17,8 @@ class DataService extends ChangeNotifier {
   List<OfficialReference> references = [];
   List<PracticeReport> practiceReports = [];
   List<FieldCase> fieldCaseStore = [];
+  List<Map<String, String>> manualDocs = []; // backend/doc/ 내의 동적 매뉴얼 문서 목록
+  List<String> categories = ['음료/메뉴', '고객 서비스', '안전/비상대응', '위생/식품안전', 'POS/금전정산', '시설/장비관리']; // 동적 업무 카테고리 목록
   RoleplayScenario? currentRecommendedScenario;
   bool isLoaded = false;
 
@@ -319,10 +321,12 @@ class DataService extends ChangeNotifier {
 
     isLoaded = true;
 
-    // 2. 백엔드 DB 서버로부터 실시간 시나리오 및 관련 법령/레퍼런스 데이터 수신
+    // 2. 백엔드 DB 서버로부터 실시간 시나리오 및 관련 법령/레퍼런스/매뉴얼/카테고리 문서 데이터 수신
     if (baseUrl != null && baseUrl.isNotEmpty) {
       await _fetchScenariosInternal(baseUrl);
       await _fetchReferencesInternal(baseUrl);
+      await _fetchManualDocsInternal(baseUrl);
+      await _fetchCategoriesInternal(baseUrl);
     }
 
     updateRecommendedScenario(forceReshuffle: false);
@@ -549,12 +553,120 @@ class DataService extends ChangeNotifier {
     notifyListeners();
   }
 
+  // 내부 매장 매뉴얼 문서 목록 동적 수신 로직 (backend/doc/ 문서 개수만큼 동적 생성)
+  Future<void> _fetchManualDocsInternal(String baseUrl, [String? token]) async {
+    try {
+      final headers = <String, String>{'Content-Type': 'application/json'};
+      if (token != null && token.isNotEmpty) {
+        headers['Authorization'] = 'Bearer $token';
+      }
+
+      final response = await http.get(
+        Uri.parse('$baseUrl/api/docs/list'),
+        headers: headers,
+      ).timeout(const Duration(seconds: 5));
+
+      if (response.statusCode == 200) {
+        final List<dynamic> jsonList = json.decode(utf8.decode(response.bodyBytes));
+        manualDocs = jsonList.map((j) => {
+          'doc_id': (j['doc_id'] ?? '').toString(),
+          'title': (j['title'] ?? '매장 매뉴얼').toString(),
+          'filename': (j['filename'] ?? '').toString(),
+          'type': (j['type'] ?? '매뉴얼 문서').toString(),
+        }).toList();
+        notifyListeners();
+      }
+    } catch (e) {
+      debugPrint('백엔드 매뉴얼 문서 목록 수신 실패: $e');
+    }
+  }
+
+  // 백엔드 DB에서 전체 동적 카테고리 목록 패치
+  Future<void> _fetchCategoriesInternal(String baseUrl) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/scenarios/categories'),
+        headers: {'Content-Type': 'application/json'},
+      ).timeout(const Duration(seconds: 5));
+
+      if (response.statusCode == 200) {
+        final List<dynamic> jsonList = json.decode(utf8.decode(response.bodyBytes));
+        final fetched = jsonList.map((j) => (j['name'] ?? '').toString()).where((s) => s.isNotEmpty).toList();
+        if (fetched.isNotEmpty) {
+          categories = fetched;
+        }
+      }
+    } catch (e) {
+      debugPrint('백엔드 카테고리 동기화 실패: $e');
+    }
+  }
+
+  // 관리자 전용: 신규 카테고리 추가 (DB 저장 및 UI 최신화 보장)
+  Future<bool> addCategory(String name, {required String? token, required String? baseUrl}) async {
+    final cleanName = name.trim();
+    if (cleanName.isEmpty) return false;
+    if (!categories.contains(cleanName)) {
+      categories.add(cleanName);
+      notifyListeners();
+    }
+    if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
+      try {
+        final response = await http.post(
+          Uri.parse('$baseUrl/scenarios/categories'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $token',
+          },
+          body: jsonEncode({'name': cleanName}),
+        ).timeout(const Duration(seconds: 5));
+        if (response.statusCode == 201 || response.statusCode == 200) {
+          await _fetchCategoriesInternal(baseUrl);
+          notifyListeners();
+          return true;
+        }
+      } catch (e) {
+        debugPrint('카테고리 추가 통신 실패: $e');
+      }
+    }
+    return true;
+  }
+
+  // 관리자 전용: 기존 카테고리 삭제 (DB 반영 및 UI 최신화 보장)
+  Future<bool> deleteCategory(String name, {required String? token, required String? baseUrl}) async {
+    final cleanName = name.trim();
+    if (cleanName.isEmpty) return false;
+    categories.remove(cleanName);
+    notifyListeners();
+
+    if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
+      try {
+        final response = await http.delete(
+          Uri.parse('$baseUrl/scenarios/categories/${Uri.encodeComponent(cleanName)}'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $token',
+          },
+        ).timeout(const Duration(seconds: 5));
+        if (response.statusCode == 204 || response.statusCode == 200) {
+          await _fetchCategoriesInternal(baseUrl);
+          notifyListeners();
+          return true;
+        }
+      } catch (e) {
+        debugPrint('카테고리 삭제 통신 실패: $e');
+      }
+    }
+    return true;
+  }
+
   // 당겨서 새로고침 알고리즘 (인위적 딜레이 제거 및 실제 네트워크 통신 소요 시간 적용)
   Future<void> refreshData({String? token, String? baseUrl}) async {
     // 1. 비동기 백엔드 DB 최신 패치
     if (baseUrl != null && baseUrl.isNotEmpty) {
       await _fetchScenariosInternal(baseUrl);
       await _fetchReferencesInternal(baseUrl);
+      await _fetchManualDocsInternal(baseUrl);
+      await _fetchCategoriesInternal(baseUrl);
     }
     if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
       await _fetchReportsInternal(token, baseUrl);
