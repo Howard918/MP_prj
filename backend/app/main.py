@@ -5,7 +5,7 @@ import socket
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import text, inspect
 
 # backend 경로를 sys.path에 추가하여 어디서 실행하든 모듈 임포트 에러 방지
 backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -62,51 +62,45 @@ def update_flutter_api_config(active_ip: str):
     """Render 배포 고정 클라우드 주소 유지"""
     pass
 
-# SQLite 데이터베이스 자동 마이그레이션 (기존 DB에 신규 컬럼 추가)
+# Cross-Database 멀티 DB 스키마 자동 마이그레이션 (SQLite & PostgreSQL 표준 호환)
 def migrate_db_schema():
     db: Session = SessionLocal()
     try:
-        # practice_reports 테이블 점검
-        result = db.execute(text("PRAGMA table_info(practice_reports)"))
-        columns = [row[1] for row in result.fetchall()]
+        inspector = inspect(engine)
 
-        if "admin_comment" not in columns:
-            db.execute(text("ALTER TABLE practice_reports ADD COLUMN admin_comment TEXT"))
-            db.commit()
-            print("DB Migration: 'admin_comment' column added to 'practice_reports' table successfully.")
+        # 1. practice_reports 테이블 컬럼 검증
+        if inspector.has_table("practice_reports"):
+            pr_columns = [col["name"] for col in inspector.get_columns("practice_reports")]
+            if "admin_comment" not in pr_columns:
+                db.execute(text("ALTER TABLE practice_reports ADD COLUMN admin_comment TEXT"))
+                db.commit()
+            if "category" not in pr_columns:
+                db.execute(text("ALTER TABLE practice_reports ADD COLUMN category TEXT"))
+                db.commit()
 
-        # users 테이블 점검
-        result_users = db.execute(text("PRAGMA table_info(users)"))
-        user_columns = [row[1] for row in result_users.fetchall()]
+        # 2. users 테이블 컬럼 검증
+        if inspector.has_table("users"):
+            user_columns = [col["name"] for col in inspector.get_columns("users")]
+            if "current_device_id" not in user_columns:
+                db.execute(text("ALTER TABLE users ADD COLUMN current_device_id TEXT"))
+                db.commit()
+            if "pending_device_id" not in user_columns:
+                db.execute(text("ALTER TABLE users ADD COLUMN pending_device_id TEXT"))
+                db.commit()
 
-        if "current_device_id" not in user_columns:
-            db.execute(text("ALTER TABLE users ADD COLUMN current_device_id TEXT"))
-            db.commit()
-            print("DB Migration: 'current_device_id' column added to 'users' table successfully.")
+        # 3. scenarios 테이블 컬럼 검증
+        if inspector.has_table("scenarios"):
+            sc_columns = [col["name"] for col in inspector.get_columns("scenarios")]
+            if "category" not in sc_columns:
+                db.execute(text("ALTER TABLE scenarios ADD COLUMN category TEXT"))
+                db.commit()
 
-        if "pending_device_id" not in user_columns:
-            db.execute(text("ALTER TABLE users ADD COLUMN pending_device_id TEXT"))
-            db.commit()
-            print("DB Migration: 'pending_device_id' column added to 'users' table successfully.")
-
-        # scenarios, field_cases, practice_reports 테이블의 category 컬럼 점검
-        res_sc = db.execute(text("PRAGMA table_info(scenarios)"))
-        sc_cols = [row[1] for row in res_sc.fetchall()]
-        if "category" not in sc_cols:
-            db.execute(text("ALTER TABLE scenarios ADD COLUMN category TEXT"))
-            db.commit()
-
-        res_pr = db.execute(text("PRAGMA table_info(practice_reports)"))
-        pr_cols = [row[1] for row in res_pr.fetchall()]
-        if "category" not in pr_cols:
-            db.execute(text("ALTER TABLE practice_reports ADD COLUMN category TEXT"))
-            db.commit()
-
-        res_fc = db.execute(text("PRAGMA table_info(field_cases)"))
-        fc_cols = [row[1] for row in res_fc.fetchall()]
-        if "category" not in fc_cols:
-            db.execute(text("ALTER TABLE field_cases ADD COLUMN category TEXT"))
-            db.commit()
+        # 4. field_cases 테이블 컬럼 검증
+        if inspector.has_table("field_cases"):
+            fc_columns = [col["name"] for col in inspector.get_columns("field_cases")]
+            if "category" not in fc_columns:
+                db.execute(text("ALTER TABLE field_cases ADD COLUMN category TEXT"))
+                db.commit()
 
     except Exception as e:
         print(f"DB Migration Note: {e}")
