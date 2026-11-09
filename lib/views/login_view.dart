@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
+import '../config/api_config.dart';
 import '../services/auth_service.dart';
 import '../services/data_service.dart';
 import 'dashboard_view.dart';
@@ -221,6 +222,16 @@ class _LoginViewState extends ConsumerState<LoginView> with SingleTickerProvider
           ),
           actions: [
             TextButton(
+              onPressed: () async {
+                urlController.text = ApiConfig.backendUrl;
+                await authService.updateCustomBaseUrl('');
+                setDialogState(() {
+                  testResult = '기본 Render 클라우드 주소로 초기화되었습니다.';
+                });
+              },
+              child: const Text('기본값 리셋'),
+            ),
+            TextButton(
               onPressed: () => Navigator.pop(ctx),
               child: const Text('취소'),
             ),
@@ -232,7 +243,7 @@ class _LoginViewState extends ConsumerState<LoginView> with SingleTickerProvider
                 });
                 final testUrl = urlController.text.trim();
                 try {
-                  final resp = await http.get(Uri.parse('$testUrl/')).timeout(const Duration(seconds: 3));
+                  final resp = await http.get(Uri.parse('$testUrl/')).timeout(const Duration(seconds: 4));
                   if (resp.statusCode == 200) {
                     setDialogState(() {
                       isTesting = false;

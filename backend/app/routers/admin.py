@@ -82,3 +82,41 @@ def update_report_admin_comment(
     db.commit()
     db.refresh(report)
     return report
+
+# 5. [DELETE] /admin/reports/{report_id}: 관리자가 특정 유저의 훈련 리포트 강제 삭제
+@router.delete("/reports/{report_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_report_by_admin(
+    report_id: int,
+    db: Session = Depends(get_db),
+    admin_user: User = Depends(get_current_admin_user)
+):
+    report = db.query(PracticeReportModel).filter(PracticeReportModel.id == report_id).first()
+    if not report:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="해당 훈련 리포트를 찾을 수 없습니다."
+        )
+
+    target_user_id = report.user_id
+    target_user = db.query(User).filter(User.id == target_user_id).first()
+
+    # DB에서 리포트 삭제
+    db.delete(report)
+    db.commit()
+
+    # 해당 유저의 전체 훈련 통계 데이터 자동 재계산 및 갱신
+    if target_user:
+        remaining_reports = db.query(PracticeReportModel).filter(PracticeReportModel.user_id == target_user_id).all()
+        target_user.total_sessions = len(remaining_reports)
+        if remaining_reports:
+            target_user.average_score = round(sum(r.score for r in remaining_reports) / len(remaining_reports), 1)
+            low_score_titles = list(set([r.scenario_title for r in remaining_reports if r.score < 80]))
+            target_user.weakness_categories = low_score_titles
+        else:
+            target_user.average_score = 0.0
+            target_user.weakness_categories = []
+
+        db.add(target_user)
+        db.commit()
+
+    return None

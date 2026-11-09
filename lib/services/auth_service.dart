@@ -157,26 +157,22 @@ class AuthService extends ChangeNotifier with WidgetsBindingObserver {
     return _deviceId!;
   }
 
-  // FastAPI 백엔드 서버 주소 (커스텀 설정 우선 적용, 자동 감지 IP 우선, 에뮬레이터 루프백 기본)
+  // FastAPI 백엔드 서버 주소 (커스텀 설정 우선 적용, 기본 정적 배포 클라우드 주소 적용)
   String get baseUrl {
     if (_customBaseUrl != null && _customBaseUrl!.isNotEmpty) {
       return _customBaseUrl!;
     }
-    if (defaultTargetPlatform == TargetPlatform.android) {
-      if (ApiConfig.backendUrl.contains('127.0.0.1')) {
-        return 'http://10.0.2.2:8000'; // 안드로이드 에뮬레이터 기본 주소
-      }
-    }
-    return ApiConfig.backendUrl; // 자동 감지된 백엔드 IP 주소
+    return ApiConfig.backendUrl; // 정적 배포 백엔드 클라우드 주소 (https://mp-app-backend-8g05.onrender.com)
   }
 
   Future<void> updateCustomBaseUrl(String newUrl) async {
     final cleanUrl = newUrl.trim();
-    _customBaseUrl = cleanUrl;
     final prefs = await SharedPreferences.getInstance();
-    if (cleanUrl.isNotEmpty) {
+    if (cleanUrl.isNotEmpty && cleanUrl != ApiConfig.backendUrl) {
+      _customBaseUrl = cleanUrl;
       await prefs.setString(_customUrlKey, cleanUrl);
     } else {
+      _customBaseUrl = null;
       await prefs.remove(_customUrlKey);
     }
     notifyListeners();
@@ -493,6 +489,28 @@ class AuthService extends ChangeNotifier with WidgetsBindingObserver {
       }
     } catch (e) {
       debugPrint('관리자 리포트 코멘트 등록 실패: $e');
+    }
+    return false;
+  }
+
+  // [관리자 전용] 8-1. 유저의 특정 훈련 리포트 강제 삭제 (DELETE /admin/reports/{report_id})
+  Future<bool> deleteAdminReport(int reportId) async {
+    if (accessToken == null) return false;
+    try {
+      final response = await http.delete(
+        Uri.parse('$baseUrl/admin/reports/$reportId'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $accessToken',
+        },
+      ).timeout(const Duration(seconds: 5));
+
+      if (response.statusCode == 204 || response.statusCode == 200) {
+        notifyListeners();
+        return true;
+      }
+    } catch (e) {
+      debugPrint('관리자 리포트 삭제 실패: $e');
     }
     return false;
   }

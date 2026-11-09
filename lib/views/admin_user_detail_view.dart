@@ -126,6 +126,53 @@ class _AdminUserDetailViewState extends ConsumerState<AdminUserDetailView> {
     );
   }
 
+  void _confirmDeleteReport(PracticeReport report) {
+    final int reportDbId = int.tryParse(report.id) ?? -1;
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.delete_forever_rounded, color: Colors.red, size: 24),
+            SizedBox(width: 8),
+            Text('훈련 리포트 삭제', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+          ],
+        ),
+        content: Text(
+          '[${report.scenarioTitle}] (${report.score}점) 훈련 리포트를 정말로 삭제하시겠습니까?\n삭제 후 유저의 평균 점수 및 총 훈련 횟수가 자동 재계산됩니다.',
+          style: const TextStyle(fontSize: 14, height: 1.4),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('취소'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () async {
+              Navigator.pop(ctx);
+              final authService = ref.read(authServiceProvider);
+              final success = await authService.deleteAdminReport(reportDbId);
+              if (mounted) {
+                if (success) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('훈련 리포트가 성공적으로 삭제되었습니다.')),
+                  );
+                  _loadUserReports(); // 리포트 목록 및 유저 통계 재패치
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('훈련 리포트 삭제 중 오류가 발생했습니다.')),
+                  );
+                }
+              }
+            },
+            child: const Text('삭제'),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _showDialogueModal(PracticeReport report) {
     showModalBottomSheet(
       context: context,
@@ -472,7 +519,19 @@ class _AdminUserDetailViewState extends ConsumerState<AdminUserDetailView> {
                             children: [
                               OutlinedButton.icon(
                                 style: OutlinedButton.styleFrom(
-                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                  foregroundColor: Colors.red,
+                                  side: const BorderSide(color: Colors.red),
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                  minimumSize: const Size(0, 36),
+                                ),
+                                onPressed: () => _confirmDeleteReport(report),
+                                icon: const Icon(Icons.delete_outline, size: 16),
+                                label: const Text('삭제', style: TextStyle(fontSize: 12)),
+                              ),
+                              const SizedBox(width: 8),
+                              OutlinedButton.icon(
+                                style: OutlinedButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                                   minimumSize: const Size(0, 36),
                                 ),
                                 onPressed: () => _showDialogueModal(report),
@@ -484,7 +543,7 @@ class _AdminUserDetailViewState extends ConsumerState<AdminUserDetailView> {
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor: const Color(0xff146b59),
                                   foregroundColor: Colors.white,
-                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                                   minimumSize: const Size(0, 36),
                                 ),
                                 onPressed: () => _showAdminCommentDialog(report),
@@ -634,10 +693,16 @@ class _AdminUserDetailViewState extends ConsumerState<AdminUserDetailView> {
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 Text('${reports[i].score}점', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: _scoreColor(reports[i].score))),
-                                const SizedBox(width: 4),
+                                const SizedBox(width: 2),
                                 IconButton(
                                   icon: const Icon(Icons.forum_outlined, size: 18),
+                                  tooltip: '대화 기록',
                                   onPressed: () => _showDialogueModal(reports[i]),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.delete_outline, size: 18, color: Colors.red),
+                                  tooltip: '리포트 삭제',
+                                  onPressed: () => _confirmDeleteReport(reports[i]),
                                 ),
                               ],
                             ),

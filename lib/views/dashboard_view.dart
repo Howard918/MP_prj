@@ -1569,9 +1569,9 @@ class _DashboardState extends ConsumerState<Dashboard> {
       const Text('상황극별 연습 히스토리와 회차별 성과 변화를 비교할 수 있습니다.'),
       const SizedBox(height: 14),
 
-      // 📈 전체 회차별 점수 변화 가시적 그래프
+      // 📈 각 상황극별 평균 점수 다각형 역량표시 레이더 차트
       if (dataService.practiceReports.isNotEmpty) ...[
-        ScoreTrendChart(reports: dataService.practiceReports),
+        CompetencyRadarChart(dataService: dataService),
         const SizedBox(height: 16),
       ],
 

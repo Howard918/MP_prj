@@ -59,15 +59,8 @@ def get_active_local_ip() -> str:
             return "127.0.0.1"
 
 def update_flutter_api_config(active_ip: str):
-    """감지된 실시간 AP 주소를 Flutter 앱의 설정(api_config.dart)에 자동 동기화합니다."""
-    config_dir = os.path.join(os.path.dirname(backend_dir), "lib", "config")
-    os.makedirs(config_dir, exist_ok=True)
-    config_path = os.path.join(config_dir, "api_config.dart")
-
-    with open(config_path, "w", encoding="utf-8") as f:
-        f.write("class ApiConfig {\n")
-        f.write(f"  static const String backendUrl = 'http://{active_ip}:8000';\n")
-        f.write("}\n")
+    """Render 배포 고정 클라우드 주소 유지"""
+    pass
 
 # SQLite 데이터베이스 자동 마이그레이션 (기존 DB에 신규 컬럼 추가)
 def migrate_db_schema():

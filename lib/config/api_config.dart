@@ -1,3 +1,3 @@
 class ApiConfig {
-  static const String backendUrl = 'http://192.168.100.13:8000';
+  static const String backendUrl = 'https://mp-app-backend-8g05.onrender.com';
 }
