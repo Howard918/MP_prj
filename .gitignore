@@ -21,9 +21,9 @@ backend/*.env
 
 # SQLite Database & Local Databases
 #*.db
-*.sqlite
-sql_app.db
-backend/sql_app.db
+#*.sqlite
+#sql_app.db
+#backend/sql_app.db
 
 # Python bytecode & cache
 __pycache__/
