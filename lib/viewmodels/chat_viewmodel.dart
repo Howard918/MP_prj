@@ -164,15 +164,17 @@ class ChatViewModel extends ChangeNotifier {
       if (_evaluationResult != null && _dataService != null) {
         final report = PracticeReport(
           id: DateTime.now().millisecondsSinceEpoch.toString(),
+          userId: _dataService?.currentUserId ?? 'user',
           scenarioId: _currentScenario?.id ?? 'custom',
           scenarioTitle: _currentScenario?.title ?? '상황극 연습',
-          industry: _currentScenario?.industry ?? '카페',
+          category: _currentScenario?.category ?? '고객 서비스',
+          industry: _currentScenario?.industry ?? '매장 운영',
           dateTime: DateTime.now(),
           score: _evaluationResult!.score,
           feedback: _evaluationResult!.feedback,
           dialogueHistory: List.from(messages),
         );
-        _dataService!.addReport(report, token: _token, baseUrl: _baseUrl);
+        _dataService!.addReport(report);
       }
     } catch (e) {
       _evaluationResult = EvaluationResult(score: 0, feedback: "평가 중 오류가 발생했습니다.");

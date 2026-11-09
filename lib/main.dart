@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'config/api_config.dart';
 import 'utils/server_connection_handler.dart';
 import 'views/login_view.dart';
 
@@ -13,7 +14,7 @@ class FirstShiftApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => MaterialApp(
-    title: '첫 근무 노트',
+    title: ApiConfig.appTitle,
     navigatorKey: navigatorKey, // 서버 끊김 시 글로벌 내비게이션 처리를 위한 키
     debugShowCheckedModeBanner: false,
     theme: ThemeData(

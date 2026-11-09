@@ -6,6 +6,7 @@ class PracticeReport {
   final String userId;
   final String scenarioId;
   final String scenarioTitle;
+  final String category;
   final String industry;
   final DateTime dateTime;
   final int score;
@@ -18,6 +19,7 @@ class PracticeReport {
     this.userId = '',
     required this.scenarioId,
     required this.scenarioTitle,
+    this.category = '고객 서비스',
     this.industry = '매장 운영',
     required this.dateTime,
     required this.score,
@@ -75,6 +77,7 @@ class PracticeReport {
       userId: (json['user_id'] ?? json['userId'] ?? '').toString().trim(),
       scenarioId: (json['scenario_id'] ?? json['scenarioId'] ?? '').toString().trim(),
       scenarioTitle: (json['scenario_title'] ?? json['scenarioTitle'] ?? '').toString().trim(),
+      category: (json['category'] ?? '고객 서비스').toString().trim(),
       industry: (json['industry'] ?? '매장 운영').toString().trim(),
       dateTime: _parseDateTime(json['date_time'] ?? json['dateTime']),
       score: (json['score'] as num?)?.toInt() ?? 0,
@@ -90,6 +93,7 @@ class PracticeReport {
       'userId': userId,
       'scenarioId': scenarioId,
       'scenarioTitle': scenarioTitle,
+      'category': category,
       'industry': industry,
       'dateTime': dateTime.toIso8601String(),
       'score': score,
@@ -103,6 +107,7 @@ class PracticeReport {
     return {
       'scenario_id': scenarioId,
       'scenario_title': scenarioTitle,
+      'category': category,
       'industry': industry,
       'date_time': dateTime.toIso8601String(),
       'score': score,

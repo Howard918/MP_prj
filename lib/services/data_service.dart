@@ -1,5 +1,6 @@
 import 'dart:convert';
-import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -8,7 +9,6 @@ import '../models/official_reference.dart';
 import '../models/practice_report.dart';
 import '../models/field_case.dart';
 import '../models/user_model.dart';
-import '../utils/server_connection_handler.dart';
 
 final dataServiceProvider = ChangeNotifierProvider<DataService>((ref) => DataService());
 
@@ -17,24 +17,30 @@ class DataService extends ChangeNotifier {
   List<OfficialReference> references = [];
   List<PracticeReport> practiceReports = [];
   List<FieldCase> fieldCaseStore = [];
-  List<Map<String, String>> manualDocs = []; // backend/doc/ 내의 동적 매뉴얼 문서 목록
-  List<String> categories = ['음료/메뉴', '고객 서비스', '안전/비상대응', '위생/식품안전', 'POS/금전정산', '시설/장비관리']; // 동적 업무 카테고리 목록
+  List<Map<String, String>> manualDocs = [];
+  List<String> categories = ['음료/메뉴', '고객 서비스', '안전/비상대응', '위생/식품안전', 'POS/금전정산', '시설/장비관리'];
+  Map<String, String> categoryIconMap = {};
   RoleplayScenario? currentRecommendedScenario;
   bool isLoaded = false;
 
   String? currentUserId;
-  Set<String> readScenarioIds = {}; // 현재 유저가 개별 확인/수행한 시나리오 ID 목록
-  Set<String> readReportIds = {}; // 현재 유저가 개별 확인/열람한 훈련 리포트 ID 목록
-  Set<String> reviewedCaseIds = {}; // 관리자가 개별 확인/열람한 검토 대기 사례 ID 목록
+  String? currentUserDbId;
+  Set<String> readScenarioIds = {};
+  Set<String> readReportIds = {};
+  Set<String> reviewedCaseIds = {};
+
   final Map<String, int> _scenarioModTimes = {};
   final Map<String, int> _scenarioReadTimes = {};
-
   final Map<String, int> _traineeReportTimes = {};
   final Map<String, int> _adminUserCheckTimes = {};
 
   static const String _customScenariosKey = 'custom_local_scenarios';
+  static const String _categoriesKey = 'custom_categories_store';
+  static const String _categoryIconsKey = 'custom_category_icons_map';
+  static const String _reportsKey = 'local_practice_reports';
+  static const String _fieldCasesKey = 'local_field_cases';
 
-  // 🔴 관리자용: 백엔드 DB에 새로 등록된 검토 대기(pending) 현장 사례 중 관리자가 열람/확인하지 않은 항목 존재 여부 동적 연산
+  // 🔴 관리자용: DB에 새로 등록된 검토 대기(pending) 현장 사례 중 관리자가 열람하지 않은 항목 존재 여부 동적 연산
   bool get hasUnreadCaseReview {
     final pendingCases = fieldCaseStore.where(
       (c) => c.status == FieldCaseStatus.pending && !c.isConvertedToScenario
@@ -44,54 +50,373 @@ class DataService extends ChangeNotifier {
     return pendingCases.any((c) => !reviewedCaseIds.contains(c.id.trim()));
   }
 
-  // 🔴 상황극 탭 알림: 공개된 시나리오 중 유저가 확인하지 않은(NEW) 항목이 1개라도 남아있는 경우 동적 연산
+  // 🔴 상황극 탭 알림: 공개된 시나리오 중 유저가 확인하지 않은(NEW) 항목이 남아있는 경우
   bool get hasUnreadNewScenario {
     final published = scenarioStore.where((s) => s.isPublished).toList();
     return published.any((s) => isScenarioNew(s.id));
   }
 
-  // 🔴 리포트 탭 알림: 완료된 훈련 리포트 중 유저가 열람하지 않은(NEW 🔴) 리포트가 1개라도 남아있는 경우 동적 연산
+  // 🔴 리포트 탭 알림: 완료된 훈련 리포트 중 유저가 열람하지 않은(NEW 🔴) 항목이 남아있는 경우
   bool get hasUnreadReport {
     return practiceReports.any((r) => isReportNew(r.id));
   }
 
-  // 로컬 저장소에 시나리오 변경 사항 영구 보관 (기본 에셋 초기화 방지)
-  Future<void> _saveScenariosToLocalPrefs() async {
+  void _initManualDocs() {
+    manualDocs = [
+      {'doc_id': '01_운영총칙', 'title': '운영 총칙', 'filename': '01_운영총칙.docx', 'type': '매장 매뉴얼 문서'},
+      {'doc_id': '02_근무_및_인사규정', 'title': '근무 및 인사 규정', 'filename': '02_근무_및_인사규정.docx', 'type': '매장 매뉴얼 문서'},
+      {'doc_id': '03_개점_및_마감_절차', 'title': '개점 및 마감 절차', 'filename': '03_개점_및_마감_절차.docx', 'type': '매장 매뉴얼 문서'},
+      {'doc_id': '04_고객응대_및_서비스', 'title': '고객 응대 및 서비스', 'filename': '04_고객응대_및_서비스.docx', 'type': '매장 매뉴얼 문서'},
+      {'doc_id': '05_음료_및_메뉴_제조기준', 'title': '음료 및 메뉴 제조 기준', 'filename': '05_음료_및_메뉴_제조기준.docx', 'type': '매장 매뉴얼 문서'},
+      {'doc_id': '06_위생_및_식품안전', 'title': '위생 및 식품안전', 'filename': '06_위생_및_식품안전.docx', 'type': '매장 매뉴얼 문서'},
+      {'doc_id': '07_재고_발주_검수', 'title': '재고·발주·검수 관리', 'filename': '07_재고_발주_검수.docx', 'type': '매장 매뉴얼 문서'},
+      {'doc_id': '08_금전_pos_정산', 'title': '금전·POS·정산 관리', 'filename': '08_금전_POS_정산.docx', 'type': '매장 매뉴얼 문서'},
+      {'doc_id': '09_시설_장비_관리', 'title': '시설 및 장비 관리', 'filename': '09_시설_장비_관리.docx', 'type': '매장 매뉴얼 문서'},
+      {'doc_id': '10_안전_및_비상대응', 'title': '안전 및 비상 대응', 'filename': '10_안전_및_비상대응.docx', 'type': '매장 매뉴얼 문서'},
+    ];
+  }
+
+  void _initDefaultReferences() {
+    references = const [
+      OfficialReference(
+        code: 'REF_01',
+        name: '식품위생법 제44조 (영업자 등의 준수사항)',
+        kind: '법령',
+        scope: '전국 휴게음식점 및 제과점, 일반음식점 공통 적용',
+        url: 'https://www.law.go.kr/',
+      ),
+      OfficialReference(
+        code: 'REF_02',
+        name: '근로기준법 제54조 (휴게시간 규정)',
+        kind: '법령',
+        scope: '근로자 1인 이상 사업장 전체 적용 (4시간 근무 시 30분 휴게)',
+        url: 'https://www.law.go.kr/',
+      ),
+      OfficialReference(
+        code: 'REF_03',
+        name: '식품 표시·광고에 관한 법률 (알레르기 유발물질 표시)',
+        kind: '공식 지침',
+        scope: '우유, 메밀, 땅콩, 대두 등 22개 알레르기 원재료 표시 의무',
+        url: 'https://www.mfds.go.kr/',
+      ),
+      OfficialReference(
+        code: 'REF_04',
+        name: '산업안전보건법 (조리·제조 시설 화상 및 미끄럼 방지 지침)',
+        kind: '공식 지침',
+        scope: '매장 조리 장비 가동 및 위생·안전 수칙 준수',
+        url: 'https://www.kosha.or.kr/',
+      ),
+      OfficialReference(
+        code: 'REF_05',
+        name: '여신전문금융업법 (POS 중복결제 및 현금영수증 처리)',
+        kind: '공식 지침',
+        scope: '카드 결제 취소 및 재결제, 영수증 발급 수칙',
+        url: 'https://www.fss.or.kr/',
+      ),
+    ];
+  }
+
+  // 로컬 초기화 및 데이터 로드 (에셋 + 백엔드 DB + SharedPreferences)
+  Future<void> loadData({String? baseUrl}) async {
+    if (isLoaded) return;
+
+    _initManualDocs();
+    _initDefaultReferences();
+    await _loadInitialAssets();
+    await _loadFromLocalPrefs();
+
+    if (baseUrl != null && baseUrl.isNotEmpty) {
+      await _fetchScenariosInternal(baseUrl);
+      await _fetchReferencesInternal(baseUrl);
+      await _fetchManualDocsInternal(baseUrl);
+      await _fetchCategoriesInternal(baseUrl);
+    }
+
+    isLoaded = true;
+    updateRecommendedScenario(forceReshuffle: false);
+    notifyListeners();
+  }
+
+  Future<void> _loadInitialAssets() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final jsonList = scenarioStore.map((s) => s.toJson()).toList();
-      await prefs.setString(_customScenariosKey, jsonEncode(jsonList));
+      final scString = await rootBundle.loadString('assets/data/scenarios.json');
+      final List<dynamic> scJson = jsonDecode(scString);
+      scenarioStore = scJson.map((j) => RoleplayScenario.fromJson(j)).toList();
+
+      final refString = await rootBundle.loadString('assets/data/references.json');
+      final List<dynamic> refJson = jsonDecode(refString);
+      references = refJson.map((j) => OfficialReference.fromJson(j)).toList();
     } catch (e) {
-      debugPrint('로컬 시나리오 영구 저장 실패: $e');
+      debugPrint('에셋 데이터 로드 예외: $e');
     }
   }
 
-  // 로컬 저장소에서 변경된 시나리오 로드하여 에셋 기본값 오버라이드
-  Future<void> _loadScenariosFromLocalPrefs() async {
+  IconData getCategoryIcon(String category) {
+    if (categoryIconMap.containsKey(category)) {
+      final iconName = categoryIconMap[category];
+      final parsed = _parseIconData(iconName);
+      if (parsed != null) return parsed;
+    }
+    return autoMatchCategoryIcon(category);
+  }
+
+  static IconData autoMatchCategoryIcon(String category) {
+    final cat = category.toLowerCase();
+    if (cat.contains('음료') || cat.contains('카페') || cat.contains('커피')) return Icons.local_cafe_outlined;
+    if (cat.contains('서비스') || cat.contains('고객') || cat.contains('응대')) return Icons.sentiment_satisfied_alt_outlined;
+    if (cat.contains('안전') || cat.contains('비상') || cat.contains('사고')) return Icons.health_and_safety_outlined;
+    if (cat.contains('위생') || cat.contains('식품') || cat.contains('청결')) return Icons.sanitizer_outlined;
+    if (cat.contains('pos') || cat.contains('정산') || cat.contains('금전') || cat.contains('결제')) return Icons.point_of_sale_outlined;
+    if (cat.contains('시설') || cat.contains('장비') || cat.contains('머신') || cat.contains('점검')) return Icons.build_circle_outlined;
+    if (cat.contains('배달') || cat.contains('포장') || cat.contains('택배')) return Icons.local_shipping_outlined;
+    if (cat.contains('이벤트') || cat.contains('행사') || cat.contains('쿠폰')) return Icons.card_giftcard_outlined;
+    if (cat.contains('청소') || cat.contains('환경') || cat.contains('마감')) return Icons.cleaning_services_outlined;
+    if (cat.contains('재고') || cat.contains('발주') || cat.contains('검수')) return Icons.inventory_2_outlined;
+    if (cat.contains('메뉴') || cat.contains('조리') || cat.contains('요리')) return Icons.restaurant_outlined;
+    return Icons.category_outlined;
+  }
+
+  static IconData? _parseIconData(String? name) {
+    return switch (name) {
+      'local_cafe' => Icons.local_cafe_outlined,
+      'sentiment_satisfied' => Icons.sentiment_satisfied_alt_outlined,
+      'health_and_safety' => Icons.health_and_safety_outlined,
+      'sanitizer' => Icons.sanitizer_outlined,
+      'point_of_sale' => Icons.point_of_sale_outlined,
+      'build_circle' => Icons.build_circle_outlined,
+      'local_shipping' => Icons.local_shipping_outlined,
+      'card_giftcard' => Icons.card_giftcard_outlined,
+      'inventory_2' => Icons.inventory_2_outlined,
+      'restaurant' => Icons.restaurant_outlined,
+      'cleaning_services' => Icons.cleaning_services_outlined,
+      'assignment' => Icons.assignment_outlined,
+      'access_time' => Icons.access_time_outlined,
+      'campaign' => Icons.campaign_outlined,
+      'attach_money' => Icons.attach_money_outlined,
+      'category' => Icons.category_outlined,
+      _ => null,
+    };
+  }
+
+  Future<void> _saveToLocalPrefs() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final savedStr = prefs.getString(_customScenariosKey);
-      if (savedStr != null && savedStr.isNotEmpty) {
-        final List<dynamic> jsonList = jsonDecode(savedStr);
-        final localScenarios = jsonList.map((j) => RoleplayScenario.fromJson(j)).toList();
+      await prefs.setString(_customScenariosKey, jsonEncode(scenarioStore.map((s) => s.toJson()).toList()));
+      await prefs.setString(_categoriesKey, jsonEncode(categories));
+      await prefs.setString(_categoryIconsKey, jsonEncode(categoryIconMap));
+      await prefs.setString(_reportsKey, jsonEncode(practiceReports.map((r) => r.toJson()).toList()));
+      await prefs.setString(_fieldCasesKey, jsonEncode(fieldCaseStore.map((c) => c.toJson()).toList()));
+    } catch (e) {
+      debugPrint('로컬 저장소 영구 보관 실패: $e');
+    }
+  }
 
-        final Map<String, RoleplayScenario> map = {};
-        for (final s in scenarioStore) {
-          map[s.id] = s;
-        }
+  Future<void> _loadFromLocalPrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+
+      final savedScStr = prefs.getString(_customScenariosKey);
+      if (savedScStr != null && savedScStr.isNotEmpty) {
+        final List<dynamic> list = jsonDecode(savedScStr);
+        final localScenarios = list.map((j) => RoleplayScenario.fromJson(j)).toList();
+        final Map<String, RoleplayScenario> map = {for (var s in scenarioStore) s.id: s};
         for (final s in localScenarios) {
           map[s.id] = s;
         }
         scenarioStore = map.values.toList();
       }
+
+      final savedCatStr = prefs.getString(_categoriesKey);
+      if (savedCatStr != null && savedCatStr.isNotEmpty) {
+        final List<dynamic> list = jsonDecode(savedCatStr);
+        categories = list.map((e) => e.toString()).toList();
+      }
+
+      final savedIconStr = prefs.getString(_categoryIconsKey);
+      if (savedIconStr != null && savedIconStr.isNotEmpty) {
+        final Map<String, dynamic> iconJson = jsonDecode(savedIconStr);
+        categoryIconMap = iconJson.map((k, v) => MapEntry(k, v.toString()));
+      }
+
+      final savedRepStr = prefs.getString(_reportsKey);
+      if (savedRepStr != null && savedRepStr.isNotEmpty) {
+        final List<dynamic> list = jsonDecode(savedRepStr);
+        practiceReports = list.map((j) => PracticeReport.fromJson(j)).toList();
+      }
+
+      final savedCaseStr = prefs.getString(_fieldCasesKey);
+      if (savedCaseStr != null && savedCaseStr.isNotEmpty) {
+        final List<dynamic> list = jsonDecode(savedCaseStr);
+        fieldCaseStore = list.map((j) => FieldCase.fromJson(j)).toList();
+      }
     } catch (e) {
-      debugPrint('로컬 시나리오 저장소 로드 실패: $e');
+      debugPrint('로컬 저장소 로드 실패: $e');
     }
   }
 
-  // 🔴 현재 유저별 타임스탬프 및 개별 읽은 시나리오/리포트 동기화 및 로드
-  Future<void> syncUserNotifications(String userId, {bool isAdmin = false}) async {
+  // --- 백엔드 DB 연동 로직 ---
+  Future<void> fetchReportsFromBackend(String? token, String? baseUrl) async {
+    if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
+      await _fetchReportsInternal(token, baseUrl);
+      notifyListeners();
+    }
+  }
+
+  Future<void> _fetchReportsInternal(String token, String baseUrl) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/users/me/reports'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+      ).timeout(const Duration(seconds: 5));
+
+      if (response.statusCode == 200) {
+        final List<dynamic> jsonList = json.decode(utf8.decode(response.bodyBytes));
+        final serverReports = jsonList.map((j) => PracticeReport.fromJson(j)).toList();
+        
+        // 로컬 리포트와 병합
+        final Map<String, PracticeReport> map = {for (var r in practiceReports) r.id: r};
+        for (final r in serverReports) {
+          map[r.id] = r;
+        }
+        practiceReports = map.values.toList();
+        practiceReports.sort((a, b) => b.dateTime.compareTo(a.dateTime));
+        _saveToLocalPrefs();
+      }
+    } catch (e) {
+      debugPrint('백엔드 훈련 리포트 동기화 실패: $e');
+    }
+  }
+
+  Future<void> fetchFieldCasesFromBackend(String? token, String? baseUrl) async {
+    if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
+      await _fetchFieldCasesInternal(token, baseUrl);
+      notifyListeners();
+    }
+  }
+
+  Future<void> _fetchFieldCasesInternal(String token, String baseUrl) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/cases'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+      ).timeout(const Duration(seconds: 5));
+
+      if (response.statusCode == 200) {
+        final List<dynamic> jsonList = json.decode(utf8.decode(response.bodyBytes));
+        final serverCases = jsonList.map((j) => FieldCase.fromJson(j)).toList();
+        
+        final Map<String, FieldCase> map = {for (var c in fieldCaseStore) c.id: c};
+        for (final c in serverCases) {
+          map[c.id] = c;
+        }
+        fieldCaseStore = map.values.toList();
+        fieldCaseStore.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+        _saveToLocalPrefs();
+      }
+    } catch (e) {
+      debugPrint('백엔드 현장 사례 동기화 실패: $e');
+    }
+  }
+
+  Future<void> _fetchReferencesInternal(String baseUrl) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/scenarios/references'),
+        headers: {'Content-Type': 'application/json'},
+      ).timeout(const Duration(seconds: 5));
+
+      if (response.statusCode == 200) {
+        final List<dynamic> jsonList = json.decode(utf8.decode(response.bodyBytes));
+        final serverRefs = jsonList.map((j) => OfficialReference.fromJson(j)).toList();
+        if (serverRefs.isNotEmpty) {
+          references = serverRefs;
+          notifyListeners();
+        }
+      }
+    } catch (e) {
+      debugPrint('백엔드 레퍼런스 동기화 실패: $e');
+    }
+  }
+
+  Future<void> _fetchScenariosInternal(String baseUrl) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/scenarios'),
+        headers: {'Content-Type': 'application/json'},
+      ).timeout(const Duration(seconds: 5));
+
+      if (response.statusCode == 200) {
+        final List<dynamic> jsonList = json.decode(utf8.decode(response.bodyBytes));
+        final serverScenarios = jsonList.map((j) => RoleplayScenario.fromJson(j)).toList();
+        final Map<String, RoleplayScenario> map = {for (var s in scenarioStore) s.id: s};
+        for (final s in serverScenarios) {
+          map[s.id] = s;
+        }
+        scenarioStore = map.values.toList();
+        _saveToLocalPrefs();
+      }
+    } catch (e) {
+      debugPrint('백엔드 시나리오 동기화 실패: $e');
+    }
+  }
+
+  Future<void> _fetchCategoriesInternal(String baseUrl) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/scenarios/categories'),
+        headers: {'Content-Type': 'application/json'},
+      ).timeout(const Duration(seconds: 5));
+
+      if (response.statusCode == 200) {
+        final List<dynamic> jsonList = json.decode(utf8.decode(response.bodyBytes));
+        final fetched = jsonList.map((j) => (j['name'] ?? '').toString()).where((s) => s.isNotEmpty).toList();
+        if (fetched.isNotEmpty) {
+          for (final f in fetched) {
+            if (!categories.contains(f)) {
+              categories.add(f);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('백엔드 카테고리 동기화 실패: $e');
+    }
+  }
+
+  Future<void> _fetchManualDocsInternal(String baseUrl) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/api/docs/list'),
+        headers: {'Content-Type': 'application/json'},
+      ).timeout(const Duration(seconds: 5));
+
+      if (response.statusCode == 200) {
+        final List<dynamic> jsonList = json.decode(utf8.decode(response.bodyBytes));
+        if (jsonList.isNotEmpty) {
+          manualDocs = jsonList.map((j) => {
+            'doc_id': (j['doc_id'] ?? '').toString(),
+            'title': (j['title'] ?? '매장 매뉴얼').toString(),
+            'filename': (j['filename'] ?? '').toString(),
+            'type': (j['type'] ?? '매뉴얼 문서').toString(),
+          }).toList();
+          notifyListeners();
+        }
+      }
+    } catch (e) {
+      debugPrint('백엔드 매뉴얼 문서 목록 동기화 실패: $e');
+    }
+  }
+
+  // 🔴 현재 유저별 알림 동기화
+  Future<void> syncUserNotifications(String userId, {bool isAdmin = false, String? userDbId}) async {
     currentUserId = userId;
+    currentUserDbId = userDbId;
     final prefs = await SharedPreferences.getInstance();
 
     _scenarioModTimes.clear();
@@ -102,53 +427,17 @@ class DataService extends ChangeNotifier {
       _scenarioReadTimes[s.id] = prefs.getInt('scenario_read_time_${userId}_${s.id}') ?? 0;
     }
 
-    // 관리자용 수습생 유저 훈련 리포트 확인 타임스탬프 동기화
     if (isAdmin) {
       _traineeReportTimes.clear();
       _adminUserCheckTimes.clear();
-      final keys = prefs.getKeys();
-      for (final key in keys) {
+      for (final key in prefs.getKeys()) {
         if (key.startsWith('last_report_completed_time_')) {
           final targetUid = key.replaceFirst('last_report_completed_time_', '');
           _traineeReportTimes[targetUid] = prefs.getInt(key) ?? 0;
           _adminUserCheckTimes[targetUid] = prefs.getInt('admin_check_time_${userId}_$targetUid') ?? 0;
         }
       }
-    }
 
-    // 1. 개별 확인된 시나리오 ID 세트 로드
-    final readList = prefs.getStringList('read_scenarios_$userId');
-    if (readList != null) {
-      readScenarioIds = readList.toSet();
-    } else {
-      if (scenarioStore.isNotEmpty) {
-        readScenarioIds = scenarioStore.map((s) => s.id).toSet();
-        await prefs.setStringList('read_scenarios_$userId', readScenarioIds.toList());
-        final now = DateTime.now().millisecondsSinceEpoch;
-        for (final s in scenarioStore) {
-          _scenarioReadTimes[s.id] = now;
-          await prefs.setInt('scenario_read_time_${userId}_${s.id}', now);
-        }
-      } else {
-        readScenarioIds = {};
-      }
-    }
-
-    // 2. 개별 확인된 훈련 리포트 ID 세트 로드
-    final readReportList = prefs.getStringList('read_reports_$userId');
-    if (readReportList != null) {
-      readReportIds = readReportList.toSet();
-    } else {
-      if (practiceReports.isNotEmpty) {
-        readReportIds = practiceReports.map((r) => r.id.trim()).toSet();
-        await prefs.setStringList('read_reports_$userId', readReportIds.toList());
-      } else {
-        readReportIds = {};
-      }
-    }
-
-    // 3. 관리자 전용 신규 현장 사례 검토 열람 ID 세트 로드
-    if (isAdmin) {
       final reviewedList = prefs.getStringList('reviewed_case_ids_$userId');
       if (reviewedList != null) {
         reviewedCaseIds = reviewedList.toSet();
@@ -157,11 +446,62 @@ class DataService extends ChangeNotifier {
       }
     }
 
+    final readList = prefs.getStringList('read_scenarios_$userId');
+    readScenarioIds = readList != null ? readList.toSet() : {};
+
+    final readReportList = prefs.getStringList('read_reports_$userId');
+    readReportIds = readReportList != null ? readReportList.toSet() : {};
+
     updateRecommendedScenario(forceReshuffle: false);
     notifyListeners();
   }
 
-  // 🔴 관리자용: 특정 수습생 유저가 새 상황극 훈련을 완수했는지(NEW 🔴) 판별
+  bool isScenarioNew(String scenarioId) {
+    if (currentUserId == null) return false;
+    if (!readScenarioIds.contains(scenarioId)) return true;
+    final modTime = _scenarioModTimes[scenarioId] ?? 0;
+    final readTime = _scenarioReadTimes[scenarioId] ?? 0;
+    return modTime > readTime;
+  }
+
+  void markScenarioAsRead(String scenarioId) async {
+    if (currentUserId == null) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    _scenarioReadTimes[scenarioId] = now;
+    readScenarioIds.add(scenarioId);
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('scenario_read_time_${currentUserId}_$scenarioId', now);
+    await prefs.setStringList('read_scenarios_$currentUserId', readScenarioIds.toList());
+    notifyListeners();
+  }
+
+  bool isReportNew(String reportId) {
+    if (currentUserId == null) return false;
+    return !readReportIds.contains(reportId.trim());
+  }
+
+  bool isScenarioReportsNew(String scenarioId) {
+    final reports = getReportsForScenario(scenarioId);
+    return reports.any((r) => isReportNew(r.id));
+  }
+
+  void markReportsAsReadForScenario(String scenarioId) {
+    final reports = getReportsForScenario(scenarioId);
+    for (final r in reports) {
+      markReportAsRead(r.id);
+    }
+  }
+
+  void markReportAsRead(String reportId) async {
+    if (currentUserId == null) return;
+    readReportIds.add(reportId.trim());
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList('read_reports_$currentUserId', readReportIds.toList());
+    notifyListeners();
+  }
+
   bool isTraineeReportNew(String traineeUserId) {
     if (currentUserId == null) return false;
     final lastReportTime = _traineeReportTimes[traineeUserId] ?? 0;
@@ -169,105 +509,20 @@ class DataService extends ChangeNotifier {
     return lastReportTime > lastCheckTime;
   }
 
-  // 🔴 관리자용: 전체 유저 목록 중 새로운 훈련 진행 데이터가 존재하는지 판별
   bool hasUnreadAdminUserReports(List<UserModel> users) {
     return users.any((u) => isTraineeReportNew(u.id));
   }
 
-  // 🔴 관리자용: 특정 유저의 [진행 데이터 열람] 버튼 클릭 시 읽음 처리
   void markTraineeReportAsInspected(String traineeUserId) async {
     final now = DateTime.now().millisecondsSinceEpoch;
     _adminUserCheckTimes[traineeUserId] = now;
-    notifyListeners();
-
     if (currentUserId != null) {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setInt('admin_check_time_${currentUserId}_$traineeUserId', now);
     }
-  }
-
-  // 🔴 개별 시나리오 항목의 읽음/안읽음(NEW 🔴) 판별
-  bool isScenarioNew(String scenarioId) {
-    if (!readScenarioIds.contains(scenarioId)) return true;
-    final modTime = _scenarioModTimes[scenarioId] ?? 0;
-    final readTime = _scenarioReadTimes[scenarioId] ?? 0;
-    if (modTime > 0 && modTime > readTime) return true;
-    return false;
-  }
-
-  // 🔴 특정 시나리오 항목을 클릭하여 확인 처리 (해당 시나리오 및 남은 안읽은 시나리오 존재 여부에 따라 탭 빨간 닷 자동 갱신)
-  void markScenarioAsRead(String scenarioId) async {
-    final now = DateTime.now().millisecondsSinceEpoch;
-    readScenarioIds.add(scenarioId);
-    _scenarioReadTimes[scenarioId] = now;
-    notifyListeners();
-
-    if (currentUserId != null) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setStringList('read_scenarios_$currentUserId', readScenarioIds.toList());
-      await prefs.setInt('scenario_read_time_${currentUserId}_$scenarioId', now);
-    }
-  }
-
-  // 🔴 개별 훈련 리포트 항목의 안읽음(NEW 🔴) 판별
-  bool isReportNew(String reportId) {
-    return !readReportIds.contains(reportId.trim());
-  }
-
-  // 🔴 특정 시나리오에 묶인 리포트 중 안읽은 리포트가 1개라도 존재하는지 판별
-  bool isScenarioReportsNew(String scenarioId) {
-    final reports = getReportsForScenario(scenarioId);
-    return reports.any((r) => isReportNew(r.id));
-  }
-
-  // 🔴 특정 훈련 리포트 항목을 직접 클릭/열람하여 읽음 처리
-  void markReportAsRead(String reportId) async {
-    final trimmedId = reportId.trim();
-    if (readReportIds.add(trimmedId)) {
-      notifyListeners();
-      if (currentUserId != null) {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setStringList('read_reports_$currentUserId', readReportIds.toList());
-      }
-    }
-  }
-
-  // 🔴 특정 시나리오에 묶인 모든 리포트 읽음 처리
-  void markReportsAsReadForScenario(String scenarioId) async {
-    final reports = getReportsForScenario(scenarioId);
-    bool changed = false;
-    for (final r in reports) {
-      if (readReportIds.add(r.id.trim())) {
-        changed = true;
-      }
-    }
-    if (changed) {
-      notifyListeners();
-      if (currentUserId != null) {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setStringList('read_reports_$currentUserId', readReportIds.toList());
-      }
-    }
-  }
-
-  // 🔴 특정 유저의 리포트를 안읽음(NEW 🔴)으로 전환 (새 훈련 완료 또는 관리자 코멘트 작성/수정 시)
-  void invalidateReadReportForUser(String reportId, String targetUserId) async {
-    final trimmedId = reportId.trim();
-    if (currentUserId == targetUserId) {
-      readReportIds.remove(trimmedId);
-    }
-    final prefs = await SharedPreferences.getInstance();
-    final targetReadList = prefs.getStringList('read_reports_$targetUserId') ?? [];
-    targetReadList.remove(trimmedId);
-    await prefs.setStringList('read_reports_$targetUserId', targetReadList);
-
-    final now = DateTime.now().millisecondsSinceEpoch;
-    _traineeReportTimes[targetUserId] = now;
-    await prefs.setInt('last_report_completed_time_$targetUserId', now);
     notifyListeners();
   }
 
-  // 사례 검토 알림 확인/해제 (현재 관리자가 검토 대기 목록을 열람했을 때 신규 ID 세트 갱신)
   void clearCaseReviewNotification() async {
     final pendingCases = fieldCaseStore.where(
       (c) => c.status == FieldCaseStatus.pending && !c.isConvertedToScenario
@@ -289,103 +544,283 @@ class DataService extends ChangeNotifier {
     }
   }
 
-  // 특정 유저에게 훈련 리포트 생성 및 피드백 알림 전송 🔴
-  Future<void> triggerReportNotification(String targetUserId) async {
+  // --- 시나리오 관리 CRUD ---
+  void addScenario(RoleplayScenario scenario, {String? token, String? baseUrl, String? creatorId}) async {
+    scenarioStore.add(scenario);
     final now = DateTime.now().millisecondsSinceEpoch;
-    _traineeReportTimes[targetUserId] = now;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt('last_report_completed_time_$targetUserId', now);
-
+    _scenarioModTimes[scenario.id] = now;
+    _saveToLocalPrefs();
+    updateRecommendedScenario(forceReshuffle: false);
     notifyListeners();
+
+    if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
+      try {
+        await http.post(
+          Uri.parse('$baseUrl/scenarios'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $token',
+          },
+          body: jsonEncode(scenario.toJson()),
+        ).timeout(const Duration(seconds: 4));
+      } catch (e) {
+        debugPrint('백엔드 시나리오 저장 실패: $e');
+      }
+    }
   }
 
-  // 관리자가 작성한 피드백 코멘트를 리포트에 반영하고, 실제로 내용에 변경이 있을 때만 안읽음(NEW 🔴) 전환 트리거
-  void setAdminReportComment(String reportId, String comment, String targetUserId) {
+  void updateScenario(RoleplayScenario scenario, {String? token, String? baseUrl, String? creatorId}) async {
+    final index = scenarioStore.indexWhere((s) => s.id == scenario.id);
+    if (index != -1) {
+      scenarioStore[index] = scenario;
+      final now = DateTime.now().millisecondsSinceEpoch;
+      _scenarioModTimes[scenario.id] = now;
+      _saveToLocalPrefs();
+      updateRecommendedScenario(forceReshuffle: false);
+      notifyListeners();
+
+      if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
+        try {
+          await http.put(
+            Uri.parse('$baseUrl/scenarios/${scenario.id}'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $token',
+            },
+            body: jsonEncode(scenario.toJson()),
+          ).timeout(const Duration(seconds: 4));
+        } catch (e) {
+          debugPrint('백엔드 시나리오 수정 실패: $e');
+        }
+      }
+    }
+  }
+
+  void toggleScenarioPublished(String scenarioId, {String? token, String? baseUrl}) async {
+    final index = scenarioStore.indexWhere((s) => s.id == scenarioId);
+    if (index != -1) {
+      scenarioStore[index].isPublished = !scenarioStore[index].isPublished;
+      _saveToLocalPrefs();
+      updateRecommendedScenario(forceReshuffle: false);
+      notifyListeners();
+
+      if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
+        try {
+          await http.put(
+            Uri.parse('$baseUrl/scenarios/$scenarioId'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $token',
+            },
+            body: jsonEncode(scenarioStore[index].toJson()),
+          ).timeout(const Duration(seconds: 4));
+        } catch (e) {
+          debugPrint('백엔드 시나리오 토글 실패: $e');
+        }
+      }
+    }
+  }
+
+  void removeScenario(String scenarioId, {String? token, String? baseUrl}) async {
+    scenarioStore.removeWhere((s) => s.id == scenarioId);
+    _saveToLocalPrefs();
+    updateRecommendedScenario(forceReshuffle: false);
+    notifyListeners();
+
+    if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
+      try {
+        await http.delete(
+          Uri.parse('$baseUrl/scenarios/$scenarioId'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $token',
+          },
+        ).timeout(const Duration(seconds: 4));
+      } catch (e) {
+        debugPrint('백엔드 시나리오 삭제 실패: $e');
+      }
+    }
+  }
+
+  // --- 카테고리 관리 ---
+  Future<bool> addCategory(String name, {String? iconName, String? token, String? baseUrl}) async {
+    final cleanName = name.trim();
+    if (cleanName.isEmpty) return false;
+    if (!categories.contains(cleanName)) {
+      categories.add(cleanName);
+    }
+    if (iconName != null && iconName.isNotEmpty) {
+      categoryIconMap[cleanName] = iconName;
+    }
+    _saveToLocalPrefs();
+    notifyListeners();
+
+    if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
+      try {
+        await http.post(
+          Uri.parse('$baseUrl/scenarios/categories'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $token',
+          },
+          body: jsonEncode({'name': cleanName}),
+        ).timeout(const Duration(seconds: 4));
+      } catch (e) {
+        debugPrint('백엔드 카테고리 추가 실패: $e');
+      }
+    }
+    return true;
+  }
+
+  Future<bool> deleteCategory(String name, {String? token, String? baseUrl}) async {
+    final cleanName = name.trim();
+    if (cleanName.isEmpty) return false;
+    categories.remove(cleanName);
+    categoryIconMap.remove(cleanName);
+    _saveToLocalPrefs();
+    notifyListeners();
+
+    if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
+      try {
+        await http.delete(
+          Uri.parse('$baseUrl/scenarios/categories/${Uri.encodeComponent(cleanName)}'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $token',
+          },
+        ).timeout(const Duration(seconds: 4));
+      } catch (e) {
+        debugPrint('백엔드 카테고리 삭제 실패: $e');
+      }
+    }
+    return true;
+  }
+
+  // --- 훈련 리포트 CRUD ---
+  void addPracticeReport(PracticeReport report, {String? token, String? baseUrl}) async {
+    final index = practiceReports.indexWhere((r) => r.id.trim() == report.id.trim());
+    if (index != -1) {
+      practiceReports[index] = report;
+    } else {
+      practiceReports.insert(0, report);
+    }
+    _saveToLocalPrefs();
+    notifyListeners();
+
+    if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
+      try {
+        final response = await http.post(
+          Uri.parse('$baseUrl/users/me/reports'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $token',
+          },
+          body: jsonEncode(report.toBackendJson()),
+        ).timeout(const Duration(seconds: 5));
+
+        if (response.statusCode == 201) {
+          debugPrint('백엔드 DB에 훈련 리포트 저장 성공!');
+          await _fetchReportsInternal(token, baseUrl);
+        }
+      } catch (e) {
+        debugPrint('백엔드 훈련 리포트 저장 실패: $e');
+      }
+    }
+  }
+
+  void addReport(PracticeReport report, {String? token, String? baseUrl}) => addPracticeReport(report, token: token, baseUrl: baseUrl);
+
+  void setAdminReportComment(String reportId, String comment, String targetUserId, {String? token, String? baseUrl}) async {
     final index = practiceReports.indexWhere((r) => r.id == reportId);
     if (index != -1) {
-      final oldComment = practiceReports[index].adminComment ?? '';
-      final newCommentTrimmed = comment.trim();
+      practiceReports[index].adminComment = comment.trim();
+      _saveToLocalPrefs();
+      notifyListeners();
 
-      // 기존 코멘트 내용과 완전 일치하여 변경 사항이 없는 경우 알림 스킵!
-      if (oldComment.trim() == newCommentTrimmed) {
-        return;
+      if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
+        try {
+          final int reportDbId = int.tryParse(reportId) ?? -1;
+          if (reportDbId > 0) {
+            await http.put(
+              Uri.parse('$baseUrl/admin/reports/$reportDbId/comment'),
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer $token',
+              },
+              body: jsonEncode({'admin_comment': comment.trim()}),
+            ).timeout(const Duration(seconds: 4));
+          }
+        } catch (e) {
+          debugPrint('백엔드 관리자 코멘트 저장 실패: $e');
+        }
       }
-
-      practiceReports[index].adminComment = newCommentTrimmed;
     }
-
-    triggerReportNotification(targetUserId);
-    notifyListeners();
   }
 
-  Future<void> loadData({String? baseUrl}) async {
-    if (isLoaded) return;
-
-    // 1. 로컬 캐시 스토리지에서 오프라인 캐시 시나리오 로드
-    await _loadScenariosFromLocalPrefs();
-
-    isLoaded = true;
-
-    // 2. 백엔드 DB 서버로부터 실시간 시나리오 및 관련 법령/레퍼런스/매뉴얼/카테고리 문서 데이터 수신
-    if (baseUrl != null && baseUrl.isNotEmpty) {
-      await _fetchScenariosInternal(baseUrl);
-      await _fetchReferencesInternal(baseUrl);
-      await _fetchManualDocsInternal(baseUrl);
-      await _fetchCategoriesInternal(baseUrl);
-    }
-
-    updateRecommendedScenario(forceReshuffle: false);
+  void deleteReport(String reportId, {String? token, String? baseUrl}) async {
+    practiceReports.removeWhere((r) => r.id == reportId);
+    _saveToLocalPrefs();
     notifyListeners();
-  }
 
-  // 내부 시나리오 동기화 로직 (백엔드 삭제/추가/수정 내역을 Source of Truth로 100% 동기화)
-  Future<void> _fetchScenariosInternal(String baseUrl) async {
-    try {
-      final response = await http.get(
-        Uri.parse('$baseUrl/scenarios'),
-        headers: {'Content-Type': 'application/json'},
-      ).timeout(const Duration(seconds: 5));
-
-      if (response.statusCode == 200) {
-        final List<dynamic> jsonList = json.decode(utf8.decode(response.bodyBytes));
-        final serverScenarios = jsonList.map((j) => RoleplayScenario.fromJson(j)).toList();
-        
-        // 💡 백엔드 DB를 최신 Source of Truth로 삼아 완전 동기화 (관리자의 시나리오 삭제/수정 즉시 전체 유저에게 반영)
-        scenarioStore = serverScenarios;
-        _saveScenariosToLocalPrefs(); // 서버 최신 수신본(삭제 포함)을 로컬 저장소에 영구 동기화
+    if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
+      try {
+        final int reportDbId = int.tryParse(reportId) ?? -1;
+        if (reportDbId > 0) {
+          await http.delete(
+            Uri.parse('$baseUrl/admin/reports/$reportDbId'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $token',
+            },
+          ).timeout(const Duration(seconds: 4));
+        }
+      } catch (e) {
+        debugPrint('백엔드 리포트 삭제 실패: $e');
       }
-    } catch (e) {
-      debugPrint('백엔드 시나리오 동기화 실패 (로컬 유지): $e');
     }
   }
 
-  // 내부 공식 근거/법령 레퍼런스 DB 동기화 로직
-  Future<void> _fetchReferencesInternal(String baseUrl) async {
-    try {
-      final response = await http.get(
-        Uri.parse('$baseUrl/scenarios/references'),
-        headers: {'Content-Type': 'application/json'},
-      ).timeout(const Duration(seconds: 5));
+  List<PracticeReport> get currentUserReports {
+    if (currentUserId == null || currentUserId!.trim().isEmpty) return [];
+    final uid = currentUserId!.trim();
+    final dbIdStr = currentUserDbId?.trim() ?? '';
 
-      if (response.statusCode == 200) {
-        final List<dynamic> jsonList = json.decode(utf8.decode(response.bodyBytes));
-        references = jsonList.map((j) => OfficialReference.fromJson(j)).toList();
+    // 💡 DB user_id(정수 PK 또는 문자열 계정 ID)와 100% 엄격 대조된 본인 리포트만 반환
+    return practiceReports.where((r) {
+      final rUid = r.userId.trim();
+      if (rUid.isEmpty) return false;
+      return rUid == uid || (dbIdStr.isNotEmpty && rUid == dbIdStr);
+    }).toList();
+  }
+
+  List<PracticeReport> getReportsForScenario(String scenarioId) {
+    return currentUserReports.where((r) => r.scenarioId == scenarioId).toList();
+  }
+
+  Map<String, List<PracticeReport>> get groupedReports {
+    final Map<String, List<PracticeReport>> grouped = {};
+    for (final report in currentUserReports) {
+      grouped.putIfAbsent(report.scenarioId, () => []).add(report);
+    }
+    return grouped;
+  }
+
+  List<PracticeReport> get lowScoreLatestReports {
+    final latestMap = <String, PracticeReport>{};
+    for (final report in currentUserReports) {
+      if (!latestMap.containsKey(report.scenarioId) ||
+          report.dateTime.isAfter(latestMap[report.scenarioId]!.dateTime)) {
+        latestMap[report.scenarioId] = report;
       }
-    } catch (e) {
-      debugPrint('백엔드 레퍼런스 동기화 실패: $e');
     }
+    return latestMap.values.where((r) => r.score < 80).toList();
   }
 
-  // 백엔드에서 시나리오 목록 최신화 수신
-  Future<void> fetchScenariosFromBackend(String baseUrl) async {
-    await _fetchScenariosInternal(baseUrl);
-    updateRecommendedScenario(forceReshuffle: false);
-    notifyListeners();
-  }
-
+  // --- 현장 사례 CRUD ---
   void addFieldCase(FieldCase fieldCase, {String? token, String? baseUrl}) async {
     fieldCaseStore.insert(0, fieldCase);
     fieldCaseStore.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    _saveToLocalPrefs();
     notifyListeners();
 
     if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
@@ -398,6 +833,7 @@ class DataService extends ChangeNotifier {
           },
           body: jsonEncode(fieldCase.toBackendJson()),
         ).timeout(const Duration(seconds: 4));
+
         if (response.statusCode == 201) {
           debugPrint('백엔드 DB에 신규 현장 사례 저장 성공!');
           await _fetchFieldCasesInternal(token, baseUrl);
@@ -410,6 +846,7 @@ class DataService extends ChangeNotifier {
 
   void deleteFieldCase(String caseId, {String? token, String? baseUrl}) async {
     fieldCaseStore.removeWhere((c) => c.id == caseId);
+    _saveToLocalPrefs();
     notifyListeners();
 
     if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
@@ -432,6 +869,7 @@ class DataService extends ChangeNotifier {
     if (index != -1) {
       fieldCaseStore[index].status = FieldCaseStatus.approved;
       fieldCaseStore[index].isConvertedToScenario = true;
+      _saveToLocalPrefs();
       notifyListeners();
 
       if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
@@ -450,41 +888,9 @@ class DataService extends ChangeNotifier {
     }
   }
 
-  // 백엔드 DB에서 현장 사례 목록 패치
-  Future<void> fetchFieldCasesFromBackend(String? token, String? baseUrl) async {
-    if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
-      await _fetchFieldCasesInternal(token, baseUrl);
-      notifyListeners();
-    }
-  }
-
-  // 내부 현장 사례 동기화 로직
-  Future<void> _fetchFieldCasesInternal(String token, String baseUrl) async {
-    try {
-      final response = await http.get(
-        Uri.parse('$baseUrl/cases'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-      ).timeout(const Duration(seconds: 5));
-
-      if (response.statusCode == 200) {
-        final List<dynamic> jsonList = json.decode(utf8.decode(response.bodyBytes));
-        fieldCaseStore = jsonList.map((j) => FieldCase.fromJson(j)).toList();
-        fieldCaseStore.sort((a, b) => b.createdAt.compareTo(a.createdAt));
-        notifyListeners();
-      }
-    } catch (e) {
-      debugPrint('백엔드 현장 사례 동기화 실패: $e');
-    }
-  }
-
-  // 유저 전환/로그아웃 시 이전 유저의 모든 메모리/세션 데이터를 100% 초기화하여 단일 계정 완벽 보장
   void clearUserData() {
     practiceReports.clear();
     fieldCaseStore.clear();
-    scenarioStore.clear();
     readScenarioIds.clear();
     readReportIds.clear();
     reviewedCaseIds.clear();
@@ -494,182 +900,13 @@ class DataService extends ChangeNotifier {
     _adminUserCheckTimes.clear();
     currentUserId = null;
     currentRecommendedScenario = null;
-    isLoaded = false; // 💡 신규 계정 진입 시 백엔드 DB 최신 데이터 패치 유도
+    isLoaded = false;
     notifyListeners();
   }
 
-  // 내부 훈련 리포트 동기화 로직 (안전한 시간/ID 기반 병합)
-  Future<void> _fetchReportsInternal(String token, String baseUrl) async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final deviceId = prefs.getString('device_unique_id') ?? '';
-
-      final response = await http.get(
-        Uri.parse('$baseUrl/users/me/reports?device_id=$deviceId'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-      ).timeout(const Duration(seconds: 5));
-
-      if (response.statusCode == 200) {
-        final List<dynamic> reportsJson = json.decode(utf8.decode(response.bodyBytes));
-        final backendReports = reportsJson.map((j) => PracticeReport.fromJson(j)).toList();
-
-        // 💡 버그 픽스: Map Key 충돌로 인한 중복/덮어쓰기 오류 방지를 위해 List 기반 완전 교체 로직 적용
-        final List<PracticeReport> syncedReports = List.from(backendReports);
-
-        for (final local in practiceReports) {
-          // 백엔드 리포트와 동일한 항목이 있는지 검사 (DB ID가 같거나, 시나리오ID+수행시각이 완벽히 일치하는 경우)
-          final existsInBackend = backendReports.any((b) => 
-              b.id == local.id || 
-              (b.scenarioId.trim() == local.scenarioId.trim() && 
-               b.dateTime.millisecondsSinceEpoch == local.dateTime.millisecondsSinceEpoch)
-          );
-          
-          // 백엔드에 아직 저장되지 않은 로컬 오프라인 전용 생성 리포트만 추가 보존
-          if (!existsInBackend) {
-              syncedReports.add(local);
-          }
-        }
-
-        practiceReports = syncedReports;
-        practiceReports.sort((a, b) => b.dateTime.compareTo(a.dateTime));
-      } else if (response.statusCode == 401 && currentUserId != null) {
-        ServerConnectionHandler.handleDisconnection('인증 세션이 만료되었습니다.\n다시 로그인해 주세요.');
-      } else if (response.statusCode == 409 && currentUserId != null) {
-        ServerConnectionHandler.handleDisconnection('다른 기기에서 동일한 유저로 로그인이 감지되었습니다.\n현재 기기에서는 로그아웃되며, 다시 이용하시려면 로그인해 주세요.');
-      }
-    } catch (e) {
-      debugPrint('백엔드 훈련 리포트 동기화 실패: $e');
-      if (currentUserId != null) {
-        ServerConnectionHandler.handleDisconnection();
-      }
-    }
-  }
-
-  // 백엔드에서 현재 로그인한 유저의 과거 훈련 이력 목록 수신하여 동기화
-  Future<void> fetchReportsFromBackend(String? token, String baseUrl) async {
-    if (token == null || token.isEmpty) {
-      return;
-    }
-    await _fetchReportsInternal(token, baseUrl);
-    updateRecommendedScenario(forceReshuffle: false);
-    notifyListeners();
-  }
-
-  // 내부 매장 매뉴얼 문서 목록 동적 수신 로직 (backend/doc/ 문서 개수만큼 동적 생성)
-  Future<void> _fetchManualDocsInternal(String baseUrl, [String? token]) async {
-    try {
-      final headers = <String, String>{'Content-Type': 'application/json'};
-      if (token != null && token.isNotEmpty) {
-        headers['Authorization'] = 'Bearer $token';
-      }
-
-      final response = await http.get(
-        Uri.parse('$baseUrl/api/docs/list'),
-        headers: headers,
-      ).timeout(const Duration(seconds: 5));
-
-      if (response.statusCode == 200) {
-        final List<dynamic> jsonList = json.decode(utf8.decode(response.bodyBytes));
-        manualDocs = jsonList.map((j) => {
-          'doc_id': (j['doc_id'] ?? '').toString(),
-          'title': (j['title'] ?? '매장 매뉴얼').toString(),
-          'filename': (j['filename'] ?? '').toString(),
-          'type': (j['type'] ?? '매뉴얼 문서').toString(),
-        }).toList();
-        notifyListeners();
-      }
-    } catch (e) {
-      debugPrint('백엔드 매뉴얼 문서 목록 수신 실패: $e');
-    }
-  }
-
-  // 백엔드 DB에서 전체 동적 카테고리 목록 패치
-  Future<void> _fetchCategoriesInternal(String baseUrl) async {
-    try {
-      final response = await http.get(
-        Uri.parse('$baseUrl/scenarios/categories'),
-        headers: {'Content-Type': 'application/json'},
-      ).timeout(const Duration(seconds: 5));
-
-      if (response.statusCode == 200) {
-        final List<dynamic> jsonList = json.decode(utf8.decode(response.bodyBytes));
-        final fetched = jsonList.map((j) => (j['name'] ?? '').toString()).where((s) => s.isNotEmpty).toList();
-        if (fetched.isNotEmpty) {
-          categories = fetched;
-        }
-      }
-    } catch (e) {
-      debugPrint('백엔드 카테고리 동기화 실패: $e');
-    }
-  }
-
-  // 관리자 전용: 신규 카테고리 추가 (DB 저장 및 UI 최신화 보장)
-  Future<bool> addCategory(String name, {required String? token, required String? baseUrl}) async {
-    final cleanName = name.trim();
-    if (cleanName.isEmpty) return false;
-    if (!categories.contains(cleanName)) {
-      categories.add(cleanName);
-      notifyListeners();
-    }
-    if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
-      try {
-        final response = await http.post(
-          Uri.parse('$baseUrl/scenarios/categories'),
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer $token',
-          },
-          body: jsonEncode({'name': cleanName}),
-        ).timeout(const Duration(seconds: 5));
-        if (response.statusCode == 201 || response.statusCode == 200) {
-          await _fetchCategoriesInternal(baseUrl);
-          notifyListeners();
-          return true;
-        }
-      } catch (e) {
-        debugPrint('카테고리 추가 통신 실패: $e');
-      }
-    }
-    return true;
-  }
-
-  // 관리자 전용: 기존 카테고리 삭제 (DB 반영 및 UI 최신화 보장)
-  Future<bool> deleteCategory(String name, {required String? token, required String? baseUrl}) async {
-    final cleanName = name.trim();
-    if (cleanName.isEmpty) return false;
-    categories.remove(cleanName);
-    notifyListeners();
-
-    if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
-      try {
-        final response = await http.delete(
-          Uri.parse('$baseUrl/scenarios/categories/${Uri.encodeComponent(cleanName)}'),
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer $token',
-          },
-        ).timeout(const Duration(seconds: 5));
-        if (response.statusCode == 204 || response.statusCode == 200) {
-          await _fetchCategoriesInternal(baseUrl);
-          notifyListeners();
-          return true;
-        }
-      } catch (e) {
-        debugPrint('카테고리 삭제 통신 실패: $e');
-      }
-    }
-    return true;
-  }
-
-  // 당겨서 새로고침 알고리즘 (인위적 딜레이 제거 및 실제 네트워크 통신 소요 시간 적용)
   Future<void> refreshData({String? token, String? baseUrl}) async {
-    // 1. 비동기 백엔드 DB 최신 패치
     if (baseUrl != null && baseUrl.isNotEmpty) {
       await _fetchScenariosInternal(baseUrl);
-      await _fetchReferencesInternal(baseUrl);
       await _fetchManualDocsInternal(baseUrl);
       await _fetchCategoriesInternal(baseUrl);
     }
@@ -678,338 +915,18 @@ class DataService extends ChangeNotifier {
       await _fetchFieldCasesInternal(token, baseUrl);
     }
 
-    // 2. 단 1회만 우선순위 기반 추천 상황극 재선출 및 UI 리빌드
     updateRecommendedScenario(forceReshuffle: true);
     notifyListeners();
   }
 
-  // 🎯 스마트 맞춤 추천 상황극 우선순위 산출 알고리즘 (수동 새로고침 / 홈 탭 이동시에만 교체)
   void updateRecommendedScenario({bool forceReshuffle = false}) {
     final published = scenarioStore.where((s) => s.isPublished).toList();
     if (published.isEmpty) {
       currentRecommendedScenario = null;
       return;
     }
-
-    // 💡 수동 새로고침/홈 탭 전환(forceReshuffle = true)이 아니고 이미 추천 상황극이 설정되어 있다면 기존 추천 고정!
-    if (!forceReshuffle && currentRecommendedScenario != null) {
-      final exists = published.any((s) => s.id == currentRecommendedScenario!.id);
-      if (exists) {
-        return; // 백그라운드 주기적 동기화로 인한 추천 상황극 빈번 교체 차단
-      }
-    }
-
-    // 🌟 우선순위 1: 새로 추가/공개되었으나 유저가 아직 확인하지 않은 신규 상황극 (NEW 🔴)
-    final newScenarios = published.where((s) => isScenarioNew(s.id)).toList();
-    if (newScenarios.isNotEmpty) {
-      currentRecommendedScenario = _selectFromCandidates(newScenarios, forceReshuffle);
-      return;
-    }
-
-    // 🌟 우선순위 2: 아직 한 번도 훈련해 보지 않은 연습 미완료 상황극
-    final practicedIds = practiceReports.map((r) => r.scenarioId.trim()).toSet();
-    final unpracticed = published.where((s) => !practicedIds.contains(s.id.trim())).toList();
-    if (unpracticed.isNotEmpty) {
-      currentRecommendedScenario = _selectFromCandidates(unpracticed, forceReshuffle);
-      return;
-    }
-
-    // 🌟 우선순위 3: 최근 연습 점수가 낮은(80점 미만) 보완 필요 상황극 (낮은 점수순 후보군)
-    final lowReports = lowScoreLatestReports;
-    if (lowReports.isNotEmpty) {
-      final lowScoreScenarioIds = lowReports.map((r) => r.scenarioId.trim()).toSet();
-      final lowScenarios = published.where((s) => lowScoreScenarioIds.contains(s.id.trim())).toList();
-      if (lowScenarios.isNotEmpty) {
-        currentRecommendedScenario = _selectFromCandidates(lowScenarios, forceReshuffle);
-        return;
-      }
-    }
-
-    // 🌟 우선순위 4: 모든 상황극을 완수한 경우 전체 시나리오 중 로테이션
-    currentRecommendedScenario = _selectFromCandidates(published, forceReshuffle);
-  }
-
-  // 동일한 우선순위 후보군 안에서 로테이션하여 다양한 상황극을 선택하는 헬퍼 함수
-  RoleplayScenario _selectFromCandidates(List<RoleplayScenario> candidates, bool forceReshuffle) {
-    if (candidates.isEmpty) return candidates.first;
-    if (candidates.length == 1) return candidates.first;
-
-    final currentIndex = currentRecommendedScenario != null
-        ? candidates.indexWhere((s) => s.id == currentRecommendedScenario!.id)
-        : -1;
-
-    // 새로고침이 아니고 이미 현 추천 시나리오가 동일 후보군에 포함된 경우 기존 선택 유지 (화면 흔들림 방지)
-    if (!forceReshuffle && currentIndex != -1) {
-      return candidates[currentIndex];
-    }
-
-    // 새로고침 시 동일한 우선순위 후보군 내에서 순차적으로 로테이션 선택하여 다양한 상황극 노출
-    final nextIndex = currentIndex == -1 ? 0 : (currentIndex + 1) % candidates.length;
-    return candidates[nextIndex];
-  }
-
-  void addReport(PracticeReport report, {String? token, String? baseUrl, String? targetUserId}) {
-    practiceReports.add(report);
-    
-    // 특정 수습생 유저에게 훈련 리포트 안읽음(NEW 🔴) 상태 트리거
-    final uid = targetUserId ?? currentUserId;
-    if (uid != null && uid.isNotEmpty) {
-      invalidateReadReportForUser(report.id, uid);
-    }
-
-    updateRecommendedScenario(forceReshuffle: true);
-    notifyListeners();
-
-    if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
-      _saveReportToBackend(report, token, baseUrl);
-    }
-  }
-
-  Future<void> _saveReportToBackend(PracticeReport report, String token, String baseUrl) async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final deviceId = prefs.getString('device_unique_id') ?? '';
-
-      final response = await http.post(
-        Uri.parse('$baseUrl/users/me/reports?device_id=$deviceId'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-        body: jsonEncode(report.toBackendJson()),
-      ).timeout(const Duration(seconds: 5));
-
-      if (response.statusCode == 200 || response.statusCode == 201) {
-        final data = jsonDecode(utf8.decode(response.bodyBytes));
-        final createdReport = PracticeReport.fromJson(data);
-
-        // 로컬 리포트 객체를 서버에서 정식 발급된 DB ID 객체로 교체
-        final index = practiceReports.indexWhere((r) => r.id == report.id || (r.scenarioId.trim() == report.scenarioId.trim() && r.dateTime.millisecondsSinceEpoch == report.dateTime.millisecondsSinceEpoch));
-        if (index != -1) {
-          practiceReports[index] = createdReport;
-        } else {
-          practiceReports.add(createdReport);
-        }
-        notifyListeners();
-        debugPrint('백엔드 DB에 훈련 리포트 정식 저장 성공! (DB ID: ${createdReport.id})');
-      } else if (response.statusCode == 401 && currentUserId != null) {
-        ServerConnectionHandler.handleDisconnection('인증 세션이 만료되었습니다.\n다시 로그인해 주세요.');
-      }
-    } catch (e) {
-      debugPrint('백엔드 훈련 리포트 저장 실패: $e');
-      if (currentUserId != null) {
-        ServerConnectionHandler.handleDisconnection();
-      }
-    }
-  }
-
-  Map<String, List<PracticeReport>> get groupedReports {
-    final Map<String, List<PracticeReport>> grouped = {};
-    for (final report in practiceReports) {
-      final sId = report.scenarioId.trim();
-      if (sId.isNotEmpty) {
-        grouped.putIfAbsent(sId, () => []).add(report);
-      }
-    }
-    for (final list in grouped.values) {
-      list.sort((a, b) => b.dateTime.compareTo(a.dateTime));
-    }
-    return grouped;
-  }
-
-  List<PracticeReport> get lowScoreLatestReports {
-    final grouped = groupedReports;
-    final List<PracticeReport> lowReports = [];
-    for (final reports in grouped.values) {
-      if (reports.isNotEmpty) {
-        final latest = reports.first;
-        if (latest.score < 80) {
-          lowReports.add(latest);
-        }
-      }
-    }
-    lowReports.sort((a, b) => a.score.compareTo(b.score));
-    return lowReports;
-  }
-
-  List<PracticeReport> getReportsForScenario(String scenarioId) {
-    final targetId = scenarioId.trim();
-    final list = practiceReports.where((r) => r.scenarioId.trim() == targetId).toList();
-    list.sort((a, b) => b.dateTime.compareTo(a.dateTime));
-    return list;
-  }
-
-  // 타 유저들의 개별 읽음 세트에서 시나리오 ID 제외 처리하여 안읽음(NEW)으로 복원
-  void invalidateReadScenarioForOthers(String scenarioId, String creatorId) async {
-    final now = DateTime.now().millisecondsSinceEpoch;
-    _scenarioModTimes[scenarioId] = now;
-
-    // 1. 현재 로그인된 유저가 제작한 본인이 아닌 경우 안읽음(NEW 🔴)으로 전환
-    if (currentUserId != null && currentUserId != creatorId) {
-      readScenarioIds.remove(scenarioId);
-    }
-    
-    // 2. 저장소의 시나리오 수정 타임스탬프 갱신
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt('scenario_mod_time_$scenarioId', now);
-    await prefs.setInt('last_scenario_published_time', now);
-    await prefs.setString('last_scenario_publisher_id', creatorId);
-  }
-
-  // 시나리오 내용이 실제로 수정되었는지 비교하는 헬퍼 함수
-  bool _hasScenarioContentChanged(RoleplayScenario oldScenario, RoleplayScenario newScenario) {
-    if (oldScenario.title.trim() != newScenario.title.trim()) return true;
-    if (oldScenario.industry.trim() != newScenario.industry.trim()) return true;
-    if (oldScenario.situation.trim() != newScenario.situation.trim()) return true;
-    if (oldScenario.expectedActions.trim() != newScenario.expectedActions.trim()) return true;
-    if (oldScenario.linkedRules.trim() != newScenario.linkedRules.trim()) return true;
-    if (oldScenario.isPublished != newScenario.isPublished) return true;
-
-    if (oldScenario.referenceCodes.length != newScenario.referenceCodes.length) return true;
-    for (int i = 0; i < oldScenario.referenceCodes.length; i++) {
-      if (oldScenario.referenceCodes[i] != newScenario.referenceCodes[i]) return true;
-    }
-
-    return false; // 실제 변경 사항 없음!
-  }
-
-  // 신규 시나리오 저장 (로컬 + 백엔드 DB)
-  void addScenario(RoleplayScenario scenario, {String? token, String? baseUrl, String? creatorId}) {
-    scenarioStore.add(scenario);
-    if (scenario.isPublished) {
-      if (creatorId != null && creatorId == currentUserId) {
-        markScenarioAsRead(scenario.id);
-      }
-      invalidateReadScenarioForOthers(scenario.id, creatorId ?? 'admin');
-    }
-    _saveScenariosToLocalPrefs(); // 로컬 저장소에도 영구 보관
-    updateRecommendedScenario(forceReshuffle: true);
-    notifyListeners();
-
-    if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
-      _saveScenarioToBackend(scenario, token, baseUrl);
-    }
-  }
-
-  Future<void> _saveScenarioToBackend(RoleplayScenario scenario, String token, String baseUrl) async {
-    try {
-      final response = await http.post(
-        Uri.parse('$baseUrl/scenarios'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-        body: jsonEncode(scenario.toJson()),
-      ).timeout(const Duration(seconds: 4));
-
-      if (response.statusCode == 201) {
-        debugPrint('백엔드 DB에 시나리오 저장 성공!');
-      } else if (response.statusCode == 401 && currentUserId != null) {
-        ServerConnectionHandler.handleDisconnection('인증 세션이 만료되었습니다.\n다시 로그인해 주세요.');
-      }
-    } catch (e) {
-      debugPrint('백엔드 시나리오 저장 실패: $e');
-      if (currentUserId != null) {
-        ServerConnectionHandler.handleDisconnection();
-      }
-    }
-  }
-
-  // 시나리오 삭제 (로컬 + 백엔드 DB)
-  void removeScenario(String id, {String? token, String? baseUrl}) {
-    scenarioStore.removeWhere((s) => s.id == id);
-    _saveScenariosToLocalPrefs(); // 로컬 저장소 업데이트
-    updateRecommendedScenario(forceReshuffle: true);
-    notifyListeners();
-
-    if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
-      _deleteScenarioOnBackend(id, token, baseUrl);
-    }
-  }
-
-  Future<void> _deleteScenarioOnBackend(String id, String token, String baseUrl) async {
-    try {
-      await http.delete(
-        Uri.parse('$baseUrl/scenarios/$id'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-      ).timeout(const Duration(seconds: 4));
-    } catch (e) {
-      debugPrint('백엔드 시나리오 삭제 실패: $e');
-      if (currentUserId != null) {
-        ServerConnectionHandler.handleDisconnection();
-      }
-    }
-  }
-
-  void toggleScenarioPublished(String id, {String? token, String? baseUrl, String? creatorId}) {
-    final index = scenarioStore.indexWhere((s) => s.id == id);
-    if (index != -1) {
-      final wasPublished = scenarioStore[index].isPublished;
-      scenarioStore[index].isPublished = !wasPublished;
-      
-      // 비공개에서 공개로 바뀐 경우에만 알림 발동 및 안읽음 상태 복원
-      if (!wasPublished && scenarioStore[index].isPublished) {
-        if (creatorId != null && creatorId == currentUserId) {
-          markScenarioAsRead(scenarioStore[index].id);
-        }
-        invalidateReadScenarioForOthers(scenarioStore[index].id, creatorId ?? 'admin');
-      }
-
-      _saveScenariosToLocalPrefs(); // 로컬 저장소 업데이트
-      updateRecommendedScenario(forceReshuffle: true);
-      notifyListeners();
-
-      if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
-        _updateScenarioOnBackend(scenarioStore[index], token, baseUrl);
-      }
-    }
-  }
-
-  // 시나리오 수정 (실제 내용 수정 시에만 알림 발동 및 안읽음 복원, 내용 미수정 시 기존 알림 상태 보존)
-  void updateScenario(RoleplayScenario scenario, {String? token, String? baseUrl, String? creatorId}) {
-    final index = scenarioStore.indexWhere((s) => s.id == scenario.id);
-    if (index != -1) {
-      final oldScenario = scenarioStore[index];
-      final contentChanged = _hasScenarioContentChanged(oldScenario, scenario);
-
-      scenarioStore[index] = scenario;
-
-      // 실제 내용이 변경되었고 공개 상태인 경우에만 수습생 알림 및 안읽음(NEW 🔴)으로 복원!
-      if (contentChanged && scenario.isPublished) {
-        if (creatorId != null && creatorId == currentUserId) {
-          markScenarioAsRead(scenario.id);
-        }
-        invalidateReadScenarioForOthers(scenario.id, creatorId ?? 'admin');
-      }
-
-      _saveScenariosToLocalPrefs(); // 로컬 저장소 업데이트
-      updateRecommendedScenario(forceReshuffle: contentChanged);
-      notifyListeners();
-
-      if (token != null && token.isNotEmpty && baseUrl != null && baseUrl.isNotEmpty) {
-        _updateScenarioOnBackend(scenario, token, baseUrl);
-      }
-    }
-  }
-
-  Future<void> _updateScenarioOnBackend(RoleplayScenario scenario, String token, String baseUrl) async {
-    try {
-      await http.put(
-        Uri.parse('$baseUrl/scenarios/${scenario.id}'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-        body: jsonEncode(scenario.toJson()),
-      ).timeout(const Duration(seconds: 4));
-    } catch (e) {
-      debugPrint('백엔드 시나리오 수정 실패: $e');
-      if (currentUserId != null) {
-        ServerConnectionHandler.handleDisconnection();
-      }
+    if (currentRecommendedScenario == null || forceReshuffle) {
+      currentRecommendedScenario = published.first;
     }
   }
 }

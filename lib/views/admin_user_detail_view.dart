@@ -29,7 +29,8 @@ class _AdminUserDetailViewState extends ConsumerState<AdminUserDetailView> {
       return;
     }
     final authService = ref.read(authServiceProvider);
-    final reports = await authService.fetchAdminUserReports(widget.user.dbId!);
+    final dataService = ref.read(dataServiceProvider);
+    final reports = await authService.fetchAdminUserReports(widget.user.dbId!, dataService);
     if (mounted) {
       setState(() {
         userReports = reports;

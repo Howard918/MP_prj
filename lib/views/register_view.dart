@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../config/api_config.dart';
 import '../services/auth_service.dart';
 
 class RegisterView extends ConsumerStatefulWidget {
@@ -128,7 +129,7 @@ class _RegisterViewState extends ConsumerState<RegisterView> with SingleTickerPr
                 ),
                 const SizedBox(height: 6),
                 const Text(
-                  '첫 근무 노트 서비스를 이용하기 위한 신규 계정을 생성합니다.',
+                  '${ApiConfig.appTitle} 서비스를 이용하기 위한 신규 계정을 생성합니다.',
                   style: TextStyle(color: Colors.grey, fontSize: 13),
                 ),
                 const SizedBox(height: 28),

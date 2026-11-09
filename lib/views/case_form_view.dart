@@ -46,12 +46,7 @@ class _CaseFormState extends ConsumerState<CaseForm> {
       createdAt: DateTime.now(),
     );
 
-    // 💡 토큰과 백엔드 URL을 정확히 전달하여 백엔드 DB 저장 및 관리자 검토 알림 즉시 동기화
-    dataService.addFieldCase(
-      newCase,
-      token: authService.accessToken,
-      baseUrl: authService.baseUrl,
-    );
+    dataService.addFieldCase(newCase);
 
     titleController.clear();
     situationController.clear();

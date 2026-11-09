@@ -329,15 +329,34 @@ class ReportDetailView extends ConsumerWidget {
   }
 }
 
-// 🌟 메인 리포트 대시보드 전용: 상황극별 평균 점수 다각형 역량표시 레이더 차트
-class CompetencyRadarChart extends StatelessWidget {
+// 🌟 리포트 메인 대시보드 전용: 동적 카테고리별 평균 점수 막대 그래프 위젯 (오버플로우 제로 & 유동적 카테고리 변동 대응)
+class CategoryScoreBarChart extends StatelessWidget {
   final DataService dataService;
 
-  const CompetencyRadarChart({super.key, required this.dataService});
+  const CategoryScoreBarChart({super.key, required this.dataService});
+
+  Color _scoreColor(double score) {
+    if (score >= 90) return Colors.green.shade600;
+    if (score < 70) return Colors.red.shade600;
+    return Colors.orange.shade700;
+  }
+
+  IconData _categoryIcon(String category) => switch (category) {
+    '음료/메뉴' => Icons.local_cafe_outlined,
+    '고객 서비스' => Icons.sentiment_satisfied_alt_outlined,
+    '안전/비상대응' => Icons.health_and_safety_outlined,
+    '위생/식품안전' => Icons.sanitizer_outlined,
+    'POS/금전정산' => Icons.point_of_sale_outlined,
+    '시설/장비관리' => Icons.build_circle_outlined,
+    _ => Icons.category_outlined,
+  };
 
   @override
   Widget build(BuildContext context) {
-    if (dataService.practiceReports.isEmpty) {
+    final categories = dataService.categories;
+    final allReports = dataService.currentUserReports;
+
+    if (allReports.isEmpty) {
       return const Card(
         child: Padding(
           padding: EdgeInsets.all(20.0),
@@ -346,35 +365,10 @@ class CompetencyRadarChart extends StatelessWidget {
       );
     }
 
-    // 상황극 타이틀별 수행 평균 점수 산출
-    final Map<String, double> scenarioScores = {};
-    for (final report in dataService.practiceReports) {
-      final title = report.scenarioTitle;
-      if (!scenarioScores.containsKey(title)) {
-        final matches = dataService.practiceReports.where((r) => r.scenarioTitle == title);
-        final avg = matches.map((r) => r.score).reduce((a, b) => a + b) / matches.length;
-        scenarioScores[title] = avg;
-      }
-    }
-
-    // 풍부한 다각형 역량 지표 구성을 위해 미수행 시나리오 축 보완 (최소 3~4개 축 유도)
-    if (scenarioScores.length < 3) {
-      for (final s in dataService.scenarioStore) {
-        if (!scenarioScores.containsKey(s.title)) {
-          scenarioScores[s.title] = 0.0;
-          if (scenarioScores.length >= 4) break;
-        }
-      }
-    }
-
-    final entries = scenarioScores.entries.toList();
-    final double overallAvg = entries.where((e) => e.value > 0).isNotEmpty
-        ? entries.where((e) => e.value > 0).map((e) => e.value).reduce((a, b) => a + b) /
-            entries.where((e) => e.value > 0).length
-        : 0.0;
+    final double overallAvg = allReports.map((r) => r.score).reduce((a, b) => a + b) / allReports.length;
 
     return Card(
-      elevation: 2.5,
+      elevation: 2,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       child: Padding(
         padding: const EdgeInsets.all(18.0),
@@ -382,183 +376,128 @@ class CompetencyRadarChart extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                const Row(
-                  children: [
-                    Icon(Icons.pentagon_outlined, color: Color(0xff146b59), size: 22),
-                    SizedBox(width: 8),
-                    Text('상황극별 역량 다각형 분석', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                  ],
-                ),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: const Color(0xff146b59).withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
+                const Icon(Icons.bar_chart_rounded, color: Color(0xff146b59), size: 22),
+                const SizedBox(width: 8),
+                const Expanded(
                   child: Text(
-                    '평균 ${overallAvg.toStringAsFixed(1)}점',
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xff146b59)),
+                    '업무 카테고리별 평균 성과',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: const Color(0xff146b59).withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      '전체 평균 ${overallAvg.toStringAsFixed(1)}점',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Color(0xff146b59)),
+                    ),
                   ),
                 ),
               ],
             ),
             const SizedBox(height: 4),
             const Text(
-              '각 상황극별 수행 평균 점수를 다각형 역량 지표로 종합 분석한 차트입니다.',
+              '동적 업무 카테고리별 훈련 회차와 평균 점수를 분석한 막대 그래프입니다.',
               style: TextStyle(color: Colors.grey, fontSize: 12),
             ),
-            const SizedBox(height: 16),
-            SizedBox(
-              height: 230,
-              width: double.infinity,
-              child: CustomPaint(
-                painter: _RadarChartPainter(scores: scenarioScores),
+            const SizedBox(height: 18),
+
+            for (final cat in categories) ...[
+              Builder(
+                builder: (context) {
+                  final catReports = allReports.where((r) => r.category == cat || r.scenarioTitle.contains(cat)).toList();
+                  final count = catReports.length;
+                  final double avgScore = count > 0
+                      ? (catReports.map((r) => r.score).reduce((a, b) => a + b) / count)
+                      : 0.0;
+
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 14.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(_categoryIcon(cat), size: 18, color: const Color(0xff146b59)),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                cat,
+                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5, color: Colors.black87),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            if (count > 0)
+                              Text(
+                                '${avgScore.toStringAsFixed(1)}점 (${count}회)',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 12.5,
+                                  color: _scoreColor(avgScore),
+                                ),
+                              )
+                            else
+                              const Text(
+                                '미수행',
+                                style: TextStyle(fontSize: 12, color: Colors.grey),
+                              ),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        LayoutBuilder(
+                          builder: (context, constraints) {
+                            final maxBarWidth = constraints.maxWidth;
+                            final fillWidth = count > 0 ? (maxBarWidth * (avgScore / 100.0)).clamp(8.0, maxBarWidth) : 0.0;
+
+                            return Stack(
+                              children: [
+                                Container(
+                                  height: 12,
+                                  width: maxBarWidth,
+                                  decoration: BoxDecoration(
+                                    color: Colors.grey.shade100,
+                                    borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(color: Colors.grey.shade300, width: 0.5),
+                                  ),
+                                ),
+                                if (count > 0)
+                                  AnimatedContainer(
+                                    duration: const Duration(milliseconds: 400),
+                                    height: 12,
+                                    width: fillWidth,
+                                    decoration: BoxDecoration(
+                                      color: _scoreColor(avgScore),
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                  ),
+                              ],
+                            );
+                          },
+                        ),
+                      ],
+                    ),
+                  );
+                },
               ),
-            ),
+            ],
           ],
         ),
       ),
     );
   }
-}
-
-class _RadarChartPainter extends CustomPainter {
-  final Map<String, double> scores;
-
-  _RadarChartPainter({required this.scores});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (scores.isEmpty) return;
-
-    final entries = scores.entries.toList();
-    final count = entries.length;
-
-    final center = Offset(size.width / 2, size.height / 2);
-    final radius = (math.min(size.width, size.height) / 2) - 38;
-
-    final gridPaint = Paint()
-      ..color = Colors.grey.shade300
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.0;
-
-    final axisLinePaint = Paint()
-      ..color = const Color(0xff146b59).withValues(alpha: 0.2)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.0;
-
-    final dataFillPaint = Paint()
-      ..color = const Color(0xff146b59).withValues(alpha: 0.25)
-      ..style = PaintingStyle.fill;
-
-    final dataStrokePaint = Paint()
-      ..color = const Color(0xff146b59)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.5
-      ..strokeCap = StrokeCap.round;
-
-    final dotPaint = Paint()
-      ..color = const Color(0xff146b59)
-      ..style = PaintingStyle.fill;
-
-    final dotInnerPaint = Paint()
-      ..color = Colors.white
-      ..style = PaintingStyle.fill;
-
-    // 1. 다각형 보조격자선 (20%, 40%, 60%, 80%, 100% 점수 레벨)
-    const levels = [0.2, 0.4, 0.6, 0.8, 1.0];
-    for (final level in levels) {
-      final levelPath = Path();
-      for (int i = 0; i < count; i++) {
-        final angle = -math.pi / 2 + (2 * math.pi * i / count);
-        final x = center.dx + radius * level * math.cos(angle);
-        final y = center.dy + radius * level * math.sin(angle);
-        if (i == 0) {
-          levelPath.moveTo(x, y);
-        } else {
-          levelPath.lineTo(x, y);
-        }
-      }
-      levelPath.close();
-      canvas.drawPath(levelPath, gridPaint);
-    }
-
-    // 2. 중심점에서 각 축 정점으로 방사선 그리기
-    for (int i = 0; i < count; i++) {
-      final angle = -math.pi / 2 + (2 * math.pi * i / count);
-      final x = center.dx + radius * math.cos(angle);
-      final y = center.dy + radius * math.sin(angle);
-      canvas.drawLine(center, Offset(x, y), axisLinePaint);
-    }
-
-    // 3. 실제 유저 평균 점수 다각형 면적 및 외곽선 렌더링
-    final dataPoints = <Offset>[];
-    for (int i = 0; i < count; i++) {
-      final score = entries[i].value;
-      final ratio = (score / 100.0).clamp(0.0, 1.0);
-      final angle = -math.pi / 2 + (2 * math.pi * i / count);
-      final x = center.dx + radius * ratio * math.cos(angle);
-      final y = center.dy + radius * ratio * math.sin(angle);
-      dataPoints.add(Offset(x, y));
-    }
-
-    if (dataPoints.isNotEmpty) {
-      final dataPath = Path()..moveTo(dataPoints.first.dx, dataPoints.first.dy);
-      for (int i = 1; i < dataPoints.length; i++) {
-        dataPath.lineTo(dataPoints[i].dx, dataPoints[i].dy);
-      }
-      dataPath.close();
-
-      canvas.drawPath(dataPath, dataFillPaint);
-      canvas.drawPath(dataPath, dataStrokePaint);
-    }
-
-    // 4. 노드 점 및 정점 타이틀/점수 라벨 렌더링
-    for (int i = 0; i < count; i++) {
-      final p = dataPoints[i];
-      final title = entries[i].key;
-      final score = entries[i].value;
-
-      canvas.drawCircle(p, 5.0, dotPaint);
-      canvas.drawCircle(p, 2.0, dotInnerPaint);
-
-      final angle = -math.pi / 2 + (2 * math.pi * i / count);
-      final labelRadius = radius + 22.0;
-      final lx = center.dx + labelRadius * math.cos(angle);
-      final ly = center.dy + labelRadius * math.sin(angle);
-
-      final shortTitle = title.length > 7 ? '${title.substring(0, 6)}…' : title;
-      final textSpan = TextSpan(
-        children: [
-          TextSpan(text: '$shortTitle\n', style: const TextStyle(fontSize: 9.5, fontWeight: FontWeight.bold, color: Colors.black87)),
-          TextSpan(
-            text: score > 0 ? '${score.toStringAsFixed(1)}점' : '미수행',
-            style: TextStyle(
-              fontSize: 9.5,
-              fontWeight: FontWeight.bold,
-              color: score > 0 ? const Color(0xff146b59) : Colors.grey,
-            ),
-          ),
-        ],
-      );
-
-      final tp = TextPainter(
-        text: textSpan,
-        textAlign: TextAlign.center,
-        textDirection: TextDirection.ltr,
-      );
-      tp.layout();
-
-      canvas.save();
-      tp.paint(canvas, Offset(lx - tp.width / 2, ly - tp.height / 2));
-      canvas.restore();
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _RadarChartPainter oldDelegate) => oldDelegate.scores != scores;
 }
 
 class ScoreTrendChart extends StatelessWidget {
@@ -595,24 +534,32 @@ class ScoreTrendChart extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                const Row(
-                  children: [
-                    Icon(Icons.show_chart_rounded, color: Color(0xff146b59), size: 22),
-                    SizedBox(width: 8),
-                    Text('회차별 점수 변화 그래프', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                  ],
-                ),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: const Color(0xff146b59).withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
+                const Icon(Icons.show_chart_rounded, color: Color(0xff146b59), size: 22),
+                const SizedBox(width: 8),
+                const Expanded(
                   child: Text(
-                    '평균 ${avgScore.toStringAsFixed(1)}점',
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xff146b59)),
+                    '회차별 점수 변화 그래프',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: const Color(0xff146b59).withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      '평균 ${avgScore.toStringAsFixed(1)}점',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Color(0xff146b59)),
+                    ),
                   ),
                 ),
               ],

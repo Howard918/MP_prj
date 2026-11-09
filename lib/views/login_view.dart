@@ -356,7 +356,7 @@ class _LoginViewState extends ConsumerState<LoginView> with SingleTickerProvider
                 ),
                 const SizedBox(height: 16),
                 const Text(
-                  '첫 근무 노트',
+                  ApiConfig.appTitle,
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontSize: 28,

@@ -81,11 +81,6 @@ class _ScenarioFormState extends ConsumerState<ScenarioForm> {
       combinedActions += '\n[선택] $optionalText';
     }
 
-    final authService = ref.read(authServiceProvider);
-    final token = authService.accessToken;
-    final baseUrl = authService.baseUrl;
-    final creatorId = authService.currentUser?.id;
-
     if (widget.existing != null) {
       final updatedScenario = RoleplayScenario(
         id: widget.existing!.id,
@@ -98,7 +93,7 @@ class _ScenarioFormState extends ConsumerState<ScenarioForm> {
         isPublished: publish,
       );
 
-      dataService.updateScenario(updatedScenario, token: token, baseUrl: baseUrl, creatorId: creatorId);
+      dataService.updateScenario(updatedScenario);
     } else {
       final scenario = RoleplayScenario(
         id: DateTime.now().microsecondsSinceEpoch.toString(),
@@ -111,12 +106,12 @@ class _ScenarioFormState extends ConsumerState<ScenarioForm> {
         isPublished: publish,
       );
 
-      dataService.addScenario(scenario, token: token, baseUrl: baseUrl, creatorId: creatorId);
+      dataService.addScenario(scenario);
     }
 
     // 현장 사례를 변환한 건인 경우 사례 상태를 '변환 승인'으로 즉시 마킹
     if (widget.fromCase != null) {
-      dataService.markCaseAsConverted(widget.fromCase!.id, token: token, baseUrl: baseUrl);
+      dataService.markCaseAsConverted(widget.fromCase!.id);
     }
 
     ScaffoldMessenger.of(context).showSnackBar(
